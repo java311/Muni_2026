@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muni"
+version = "2.0.0"
+description = "Muni — reconstrucción 3D de neuronas (Golgi-Cox) desde fotografías axiales, con algoritmos escritos desde cero."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Muni contributors" }]
+keywords = ["neuron", "marching-cubes", "3d-reconstruction", "golgi-cox", "segmentation"]
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "PySide6>=6.5",
+]
+
+[project.optional-dependencies]
+ai = ["torch>=2.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-qt>=4.2",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+muni = "muni.app.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["muni*"]
+
+[tool.setuptools.package-data]
+muni = ["../assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
