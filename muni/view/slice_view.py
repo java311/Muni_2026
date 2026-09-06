@@ -21,6 +21,7 @@ class SliceView(QWidget):
         super().__init__(parent)
         self._plane: np.ndarray | None = None  # (Y, X) float32 en 0..255
         self._overlay: np.ndarray | None = None  # máscara bool del umbral
+        self._overlay_color: tuple[int, int, int] = (255, 40, 40)  # (R, G, B)
         self._zoom = 1.0
         self._offset = np.array([0.0, 0.0], dtype=np.float64)  # px pantalla
         self._line: tuple[int, int, int, int] | None = None
@@ -42,6 +43,9 @@ class SliceView(QWidget):
     def set_overlay(self, overlay: np.ndarray | None) -> None:
         self._overlay = np.asarray(overlay, dtype=bool) if overlay is not None else None
         self.update()
+
+    def set_overlay_color(self, r: int, g: int, b: int) -> None:
+        self._overlay_color = (r, g, b)
 
     def set_line(self, line: tuple[int, int, int, int] | None) -> None:
         self._line = line
@@ -88,9 +92,9 @@ class SliceView(QWidget):
             rgb = np.repeat(plane[:, :, None], 3, axis=2)
             if self._overlay.shape == plane.shape:
                 ov = self._overlay
-                rgb[ov, 0] = 255
-                rgb[ov, 1] = 40
-                rgb[ov, 2] = 40
+                rgb[ov, 0] = self._overlay_color[0]
+                rgb[ov, 1] = self._overlay_color[1]
+                rgb[ov, 2] = self._overlay_color[2]
         data = np.ascontiguousarray(rgb)
         img = QImage(data.data, w, h, data.strides[0], QImage.Format.Format_RGB888)
         return img.copy()

@@ -114,6 +114,11 @@ class GLViewport(QOpenGLWidget):
         self._last_pos = None
         self._mouse_button: Qt.MouseButton | None = None
 
+        # Esqueleto
+        self._show_skeleton = False
+        self._skeleton_verts: np.ndarray | None = None  # (E*2, 3) world coords
+        self._skeleton_colors: list[tuple[float, float, float]] = []
+
         # Bandera de re-upload de buffers
         self._mesh_dirty = True
         self._line_dirty = True
@@ -170,6 +175,73 @@ class GLViewport(QOpenGLWidget):
     @measure_mode.setter
     def measure_mode(self, value: bool) -> None:
         self._measure_mode = bool(value)
+        self._line_dirty = True
+        self.update()
+
+    # --------------------------------------------------------- esqueleto
+    @property
+    def show_skeleton(self) -> bool:
+        return self._show_skeleton
+
+    @show_skeleton.setter
+    def show_skeleton(self, value: bool) -> None:
+        self._show_skeleton = bool(value)
+        self._line_dirty = True
+        self.update()
+
+    def set_skeleton(self, coords: np.ndarray, parents: np.ndarray, spacing: tuple[float, float, float]) -> None:
+        """Carga esqueleto para renderizado.
+
+        Parameters
+        ----------
+        coords:
+            ``(N, 3)`` coordenadas de voxel (z, y, x).
+        parents:
+            ``(N,)`` índice del padre (-1 para raíz).
+        spacing:
+            ``(dz, dy, dx)`` en micras.
+        """
+        if coords is None or len(coords) == 0:
+            self._skeleton_verts = None
+            self._skeleton_colors = []
+            self.update()
+            return
+
+        # Pequeño offset para que el esqueleto quede ligeramente por encima de la
+        # superficie de la neurona (evita z-fighting visual).
+        offset = 0.3
+
+        edges = []
+        for i in range(len(parents)):
+            p = int(parents[i])
+            if p >= 0:
+                # Convención del mesh (marching cubes): [Z*sz, Y*sy, X*sx].
+                v0 = np.array([
+                    coords[i, 0] * spacing[0] + offset,
+                    coords[i, 1] * spacing[1],
+                    coords[i, 2] * spacing[2],
+                ], dtype=np.float32)
+                v1 = np.array([
+                    coords[p, 0] * spacing[0] + offset,
+                    coords[p, 1] * spacing[1],
+                    coords[p, 2] * spacing[2],
+                ], dtype=np.float32)
+                edges.append((v0, v1))
+
+        if edges:
+            self._skeleton_verts = np.concatenate(
+                [np.array([a, b], np.float32) for a, b in edges], axis=0
+            )
+            self._skeleton_colors = [(1.0, 0.3, 0.3)] * len(edges)
+        else:
+            self._skeleton_verts = None
+            self._skeleton_colors = []
+        self._line_dirty = True
+        self.update()
+
+    def clear_skeleton(self) -> None:
+        self._skeleton_verts = None
+        self._skeleton_colors = []
         self._line_dirty = True
         self.update()
 
@@ -339,6 +411,10 @@ class GLViewport(QOpenGLWidget):
                     a[axis] -= size
                     b[axis] += size
                     segments.append((np.array([a, b], np.float32), col))
+
+        # Esqueleto: aristas del árbol dendrítico.
+        if self._show_skeleton and self._skeleton_verts is not None and len(self._skeleton_verts) > 0:
+            segments.append((self._skeleton_verts, (1.0, 0.3, 0.3)))
 
         # Concatenar en un solo VBO, recordando (offset, count, color).
         if segments:

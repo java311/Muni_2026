@@ -26,6 +26,7 @@ from muni import __version__
 from muni.app.resources import load_icon
 from muni.core.gltf_io import load_model, save_model
 from muni.core.meta import ModelMeta
+from muni.trace.swc import write_swc
 from muni.view.gl_viewport import GLViewport
 from muni.view.wizard import ReconstructionWizard
 
@@ -48,6 +49,8 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self.meta: ModelMeta | None = None
+        self.trace_result = None
+        self.trace_spacing: tuple[float, float, float] | None = None
 
         # ------------------------------------------------------------- central
         self.viewport = GLViewport()
@@ -93,6 +96,10 @@ class MainWindow(QMainWindow):
         act_container = QAction("Caja contenedora", self, checkable=True, checked=True)
         act_container.toggled.connect(lambda v: setattr(self.viewport, "show_container", v))
         menu_view.addAction(act_container)
+
+        self._act_skeleton = QAction("Esqueleto dendrítico", self, checkable=True, checked=False)
+        self._act_skeleton.toggled.connect(lambda v: setattr(self.viewport, "show_skeleton", v))
+        menu_view.addAction(self._act_skeleton)
 
         sub_mode = menu_view.addMenu("Modo de visualización")
         act_fill = QAction("Relleno", self)
@@ -181,7 +188,19 @@ class MainWindow(QMainWindow):
         wizard = ReconstructionWizard(self)
         if wizard.exec() == ReconstructionWizard.DialogCode.Accepted and wizard.mesh is not None:
             self.meta = wizard.meta
+            self.trace_result = wizard.trace_result
+            self.trace_spacing = wizard.trace_spacing
             self.viewport.set_mesh(wizard.mesh, units="um")
+            if self.trace_result is not None and self.trace_spacing is not None:
+                self.viewport.set_skeleton(
+                    self.trace_result.coords,
+                    self.trace_result.parents,
+                    self.trace_spacing,
+                )
+                self._act_skeleton.setChecked(True)
+            else:
+                self.viewport.clear_skeleton()
+                self._act_skeleton.setChecked(False)
             self._update_info()
 
     def _open_model(self) -> None:
@@ -195,6 +214,26 @@ class MainWindow(QMainWindow):
             return
         self.meta = meta
         self.viewport.set_mesh(mesh, units="um")
+        # Intentar cargar esqueleto SWC acompañante.
+        swc_path = Path(path).with_suffix(".swc")
+        if swc_path.exists():
+            from muni.trace.swc import load_swc
+            try:
+                trace_result, trace_spacing = load_swc(swc_path)
+                self.trace_result = trace_result
+                self.trace_spacing = trace_spacing
+                self.viewport.set_skeleton(trace_result.coords, trace_result.parents, trace_spacing)
+                self._act_skeleton.setChecked(True)
+            except (ValueError, OSError):
+                self.trace_result = None
+                self.trace_spacing = None
+                self.viewport.clear_skeleton()
+                self._act_skeleton.setChecked(False)
+        else:
+            self.trace_result = None
+            self.trace_spacing = None
+            self.viewport.clear_skeleton()
+            self._act_skeleton.setChecked(False)
         self._update_info()
         self.statusBar().showMessage(f"Modelo abierto: {Path(path).name}")
 
@@ -208,7 +247,12 @@ class MainWindow(QMainWindow):
             return
         meta = self.meta or ModelMeta()
         save_model(path, mesh, meta)
-        self.statusBar().showMessage(f"Guardado: {path}")
+        if self.trace_result is not None:
+            swc_path = Path(path).with_suffix(".swc")
+            write_swc(swc_path, self.trace_result, spacing=self.trace_spacing)
+            self.statusBar().showMessage(f"Guardado: {path} + {swc_path.name}")
+        else:
+            self.statusBar().showMessage(f"Guardado: {path}")
 
     def _pick_neuron_color(self) -> None:
         color = QColorDialog.getColor(self.viewport.neuron_color, self, "Color de la neurona")

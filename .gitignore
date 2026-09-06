@@ -14,7 +14,7 @@ venv/
 .ruff_cache/
 *.coverage
 htmlcov/
-test/fixtures/*
+tests/fixtures/
 
 # OS / editor
 .DS_Store
@@ -24,4 +24,3 @@ Thumbs.db
 
 # Muni data artifacts
 *.muni.json.bak
-tests/fixtures/*.tmp

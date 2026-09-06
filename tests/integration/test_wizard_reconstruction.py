@@ -50,7 +50,6 @@ def test_wizard_reconstruction_runs(app, method):
     wiz.paths = [Path(".") / f"p{i}.png" for i in range(wiz.volume.dimz)]
     wiz._fill_planes()
     wiz.seed_plane = wiz.volume.dimz // 2
-    # Línea cruzando la esfera (de borde a borde por su centro).
     wiz.line = (8, 18, 27, 18)
     wiz.threshold_gray = 128
     if method == "marching_cubes":
@@ -59,13 +58,21 @@ def test_wizard_reconstruction_runs(app, method):
         wiz.radio_dc.setChecked(True)
 
     wiz._run()
-    # Esperar a que la tarea acabe (malla lista -> accept()) o falle.
     deadline = time.monotonic() + 90.0
-    while wiz.mesh is None and time.monotonic() < deadline:
+    while not hasattr(wiz, "_seg_result") or wiz._seg_result is None:
+        if time.monotonic() > deadline:
+            pytest.fail("Segmentación no completada")
+        _pump(app, 0.3)
+
+    wiz._start_extraction()
+    deadline = time.monotonic() + 90.0
+    while wiz.mesh is None:
+        if time.monotonic() > deadline:
+            pytest.fail("Extracción no completada")
         _pump(app, 0.3)
     _pump(app, 0.5)
 
-    assert wiz.mesh is not None, "La reconstrucción no produjo malla (¿se ejecutó el hilo?)"
+    assert wiz.mesh is not None, "La reconstrucción no produjo malla"
     assert not wiz.mesh.is_empty
     assert wiz.meta is not None
     assert wiz.meta.extractor == method

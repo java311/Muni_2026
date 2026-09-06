@@ -12,19 +12,17 @@ import os
 import sys
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QMessageBox,
     QProgressBar,
@@ -37,16 +35,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from muni.app.resources import load_icon
 from muni.calibrate.isolevel import otsu_gray_threshold
 from muni.calibrate.zcalib import measure_on_grayscale
 from muni.core.meta import ModelMeta
 from muni.core.volume import Volume3D
 from muni.io.stack_loader import load_folder, load_stack, natural_key
+from muni.postprocess.smooth import taubin_smooth
 from muni.reconstruct.dual_contouring import DualContouring
 from muni.reconstruct.marching_cubes import MarchingCubes
 from muni.segment.classical import ClassicalSegmenter
-from muni.postprocess.smooth import taubin_smooth
-from muni.app.resources import load_icon
+from muni.segment.focused import FocusedSegmenter
+from muni.trace.skimage_tracer import SkimageTracer
 from muni.view.slice_view import SliceView
 from muni.view.worker import run_in_thread
 
@@ -67,6 +67,8 @@ class ReconstructionWizard(QDialog):
 
         self.mesh = None
         self.meta: ModelMeta | None = None
+        self.trace_result = None
+        self.trace_spacing: tuple[float, float, float] | None = None
 
         self.volume: Volume3D | None = None
         self.paths: list = []
@@ -180,9 +182,14 @@ class ReconstructionWizard(QDialog):
         self.lbl_calib_state.setStyleSheet("color: #999;")
         self.lbl_calib_state.setWordWrap(True)
 
+        self.chk_show_sharpness = QCheckBox("Previsualizar nitidez (contraste local)")
+        self.chk_show_sharpness.setChecked(False)
+        self.chk_show_sharpness.toggled.connect(self._on_sharpness_toggled)
+
         right = QVBoxLayout()
         right.addWidget(QLabel("Planos:"))
         right.addWidget(self.list_planes)
+        right.addWidget(self.chk_show_sharpness)
         right.addWidget(self.btn_auto_threshold)
         right.addWidget(self.lbl_threshold)
         right.addWidget(self.slider_threshold)
@@ -217,6 +224,21 @@ class ReconstructionWizard(QDialog):
         self.spin_iso.setValue(0.5)
         self.spin_iso.setSingleStep(0.05)
 
+        self.chk_trace = QCheckBox("Generar tracing dendrítico (SWC)")
+        self.chk_trace.setChecked(False)
+
+        self.radio_seg_classical = QRadioButton("Clásico (Otsu)")
+        self.radio_seg_focused = QRadioButton("Enfoque + Frangi")
+        self.radio_seg_classical.setChecked(True)
+
+        self._grp_extraction = QButtonGroup(self)
+        self._grp_extraction.addButton(self.radio_dc)
+        self._grp_extraction.addButton(self.radio_mc)
+
+        self._grp_segmentation = QButtonGroup(self)
+        self._grp_segmentation.addButton(self.radio_seg_classical)
+        self._grp_segmentation.addButton(self.radio_seg_focused)
+
         self.btn_run = QPushButton("Reconstruir")
         self.btn_run.clicked.connect(self._run)
         self.btn_run.setEnabled(False)
@@ -227,6 +249,19 @@ class ReconstructionWizard(QDialog):
         self.lbl_progress = QLabel("Listo.")
         self.lbl_progress.setStyleSheet("color: #999;")
 
+        self.seg_preview = SliceView()
+        self.seg_preview.set_overlay_color(40, 255, 40)
+        self.seg_preview.setMinimumHeight(200)
+        self.seg_preview.hide()
+
+        self.btn_continue = QPushButton("Continuar con extracción")
+        self.btn_continue.clicked.connect(self._start_extraction)
+        self.btn_continue.hide()
+
+        self.btn_resgment = QPushButton("Volver a segmentar")
+        self.btn_resgment.clicked.connect(self._reset_to_segmentation)
+        self.btn_resgment.hide()
+
         grid = QGridLayout(box)
         grid.addWidget(QLabel("Método de extracción:"), 0, 0)
         grid.addWidget(self.radio_dc, 0, 1)
@@ -235,9 +270,16 @@ class ReconstructionWizard(QDialog):
         grid.addWidget(self.spin_diameter, 2, 1)
         grid.addWidget(QLabel("Umbral de probabilidad (isonivel 3D):"), 3, 0)
         grid.addWidget(self.spin_iso, 3, 1)
-        grid.addWidget(self.btn_run, 4, 0, 1, 2)
-        grid.addWidget(self.progress, 5, 0, 1, 2)
-        grid.addWidget(self.lbl_progress, 6, 0, 1, 2)
+        grid.addWidget(QLabel("Método de segmentación:"), 4, 0)
+        grid.addWidget(self.radio_seg_classical, 4, 1)
+        grid.addWidget(self.radio_seg_focused, 5, 1)
+        grid.addWidget(self.chk_trace, 6, 0, 1, 2)
+        grid.addWidget(self.btn_run, 7, 0, 1, 2)
+        grid.addWidget(self.progress, 8, 0, 1, 2)
+        grid.addWidget(self.lbl_progress, 9, 0, 1, 2)
+        grid.addWidget(self.seg_preview, 10, 0, 1, 2)
+        grid.addWidget(self.btn_continue, 11, 0, 1, 2)
+        grid.addWidget(self.btn_resgment, 12, 0, 1, 2)
 
         outer = QVBoxLayout(page)
         outer.addWidget(box)
@@ -353,7 +395,31 @@ class ReconstructionWizard(QDialog):
     def _threshold_overlay(self) -> np.ndarray | None:
         if self.volume is None:
             return None
+        if self.chk_show_sharpness.isChecked():
+            return self._sharpness_overlay()
         return self.volume.plane(self.seed_plane) <= self.threshold_gray
+
+    def _on_sharpness_toggled(self, checked: bool) -> None:
+        if self.volume is None:
+            return
+        if checked:
+            self.slice_view.set_overlay_color(40, 255, 40)
+        else:
+            self.slice_view.set_overlay_color(255, 40, 40)
+        self.slice_view.set_overlay(self._threshold_overlay())
+
+    def _sharpness_overlay(self) -> np.ndarray | None:
+        if self.volume is None:
+            return None
+        from muni.segment.threshold import _box_mean
+        plane = self.volume.plane(self.seed_plane).astype(np.float64)
+        mean = _box_mean(plane, 3)
+        mean_sq = _box_mean(plane * plane, 3)
+        std = np.sqrt(np.clip(mean_sq - mean * mean, 0, None))
+        s_max = float(std.max())
+        if s_max < 1e-10:
+            return None
+        return std > s_max * 0.3
 
     # ---------------------------------------------------------------- paso 4
     def _run(self) -> None:
@@ -361,27 +427,27 @@ class ReconstructionWizard(QDialog):
             return
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(False)
+        self.seg_preview.hide()
+        self.btn_continue.hide()
+        self.btn_resgment.hide()
         self.progress.setValue(0)
         self.lbl_progress.setText("Calibrando...")
 
         try:
-            self._start_reconstruction()
+            self._start_segmentation()
         except Exception as exc:  # noqa: BLE001 - nunca dejar botones bloqueados
             self.btn_run.setEnabled(True)
             self.btn_cancel.setEnabled(True)
             import traceback
 
             print(f"[muni-error]{os.linesep}{traceback.format_exc()}", file=sys.stderr, flush=True)
-            QMessageBox.critical(self, "Muni — Error", f"No se pudo iniciar la reconstrucción:\n{exc}")
+            QMessageBox.critical(self, "Muni — Error", f"No se pudo iniciar la segmentación:\n{exc}")
 
-    def _start_reconstruction(self) -> None:
+    def _start_segmentation(self) -> None:
         if self.volume is None or self.line is None:
             return
         diameter = float(self.spin_diameter.value())
-        isolevel = float(self.spin_iso.value())
-        method = "dual_contouring" if self.radio_dc.isChecked() else "marching_cubes"
 
-        # Calibración Z a partir de la dendrita marcada.
         volume = self.volume
         cal = measure_on_grayscale(volume, self.threshold_gray, self.seed_plane, self.line)
         if cal.z_extent_planes > 0 and cal.max_diameter_px > 0:
@@ -395,19 +461,84 @@ class ReconstructionWizard(QDialog):
                 self, "Muni", "No se detectó la dendrita en Z; se usará espaciado 1.0 (sin escala física)."
             )
 
+        use_focused = self.radio_seg_focused.isChecked()
+
         def task(progress):
-            progress(5, "Segmentando (clásico)...")
-            seg = ClassicalSegmenter(denoise=True, keep_largest=True).segment(volume)
-            progress(40, "Extrayendo superficie...")
-            spacing = (
-                volume.spacing_z_um,
-                volume.spacing_xy_um,
-                volume.spacing_xy_um,
-            )
+            progress(10, "Segmentando...")
+            if use_focused:
+                seg = FocusedSegmenter(denoise=True, keep_largest=True).segment(volume)
+            else:
+                seg = ClassicalSegmenter(denoise=True, keep_largest=True).segment(volume)
+            progress(100, "Segmentación completada")
+            return seg
+
+        self._thread = run_in_thread(
+            task,
+            on_finished=self._on_segmentation_done,
+            on_error=self._on_error,
+            on_progress=self._on_progress,
+        )
+
+    def _on_segmentation_done(self, result) -> None:
+        self.btn_run.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+        if result is None:
+            return
+        self._seg_result = result
+        mid = self.volume.dimz // 2
+        plane = self.volume.plane(mid)
+        self.seg_preview.set_plane(plane, result.mask[mid])
+        self.seg_preview.fit_to_window()
+        self.seg_preview.show()
+        self.btn_continue.show()
+        self.btn_resgment.show()
+        n_voxels = int(result.mask.sum())
+        self.lbl_progress.setText(
+            f"Segmentación: {n_voxels} voxels detectados. Revisa la máscara y continúa."
+        )
+
+    def _reset_to_segmentation(self) -> None:
+        self.seg_preview.hide()
+        self.btn_continue.hide()
+        self.btn_resgment.hide()
+        self._seg_result = None
+        self.lbl_progress.setText("Listo.")
+        self.progress.setValue(0)
+
+    def _start_extraction(self) -> None:
+        if self.volume is None or self.line is None or not hasattr(self, "_seg_result"):
+            return
+        self.btn_continue.setEnabled(False)
+        self.btn_resgment.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.progress.setValue(0)
+
+        diameter = float(self.spin_diameter.value())
+        isolevel = float(self.spin_iso.value())
+        method = "dual_contouring" if self.radio_dc.isChecked() else "marching_cubes"
+        do_trace = self.chk_trace.isChecked()
+        seg = self._seg_result
+        volume = self.volume
+        spacing = (
+            volume.spacing_z_um,
+            volume.spacing_xy_um,
+            volume.spacing_xy_um,
+        )
+
+        def task(progress):
+            progress(10, "Extrayendo superficie...")
             extractor = RADIO_METHODS[method]()
             result = extractor.extract(seg.probability, isovalue=isolevel, spacing=spacing)
-            progress(70, "Suavizando malla...")
+            progress(50, "Suavizando malla...")
             mesh = taubin_smooth(result.mesh, iterations=3)
+
+            trace_result = None
+            if do_trace:
+                progress(70, "Tracing dendrítico...")
+                tracer = SkimageTracer()
+                trace_result = tracer.trace(seg.mask, spacing=spacing)
+                progress(90, f"Longitud dendrítica: {trace_result.total_length_um:.1f} µm")
+
             meta = ModelMeta(
                 dimx=volume.dimx,
                 dimy=volume.dimy,
@@ -422,14 +553,23 @@ class ReconstructionWizard(QDialog):
                 source_stack=", ".join(p.name for p in self.paths[:3]),
             )
             progress(100, "Listo")
-            return mesh, meta
+            return mesh, meta, trace_result, spacing
 
         self._thread = run_in_thread(
             task,
             on_finished=self._on_finished,
-            on_error=self._on_error,
+            on_error=self._on_error_extraction,
             on_progress=self._on_progress,
         )
+
+    def _on_error_extraction(self, message: str) -> None:
+        self.btn_continue.setEnabled(True)
+        self.btn_resgment.setEnabled(True)
+        self.btn_run.setEnabled(True)
+        import sys
+
+        print(f"[muni-error]{os.linesep}{message}", file=sys.stderr, flush=True)
+        QMessageBox.critical(self, "Muni — Error", message)
 
     def _on_progress(self, percent: int, message: str) -> None:
         self.progress.setValue(percent)
@@ -449,7 +589,7 @@ class ReconstructionWizard(QDialog):
         self.btn_cancel.setEnabled(True)
         if result is None:
             return
-        mesh, meta = result
+        mesh, meta, trace_result, trace_spacing = result
         if mesh.is_empty:
             QMessageBox.warning(
                 self, "Muni", "La malla quedó vacía: revisa el umbral o el método de segmentación."
@@ -457,4 +597,6 @@ class ReconstructionWizard(QDialog):
             return
         self.mesh = mesh
         self.meta = meta
+        self.trace_result = trace_result
+        self.trace_spacing = trace_spacing
         self.accept()
