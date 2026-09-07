@@ -26,6 +26,7 @@ from muni import __version__
 from muni.app.resources import load_icon
 from muni.core.gltf_io import load_model, save_model
 from muni.core.meta import ModelMeta
+from muni.io.lif_converter import convert_lif_to_png
 from muni.trace.swc import write_swc
 from muni.view.gl_viewport import GLViewport
 from muni.view.wizard import ReconstructionWizard
@@ -76,6 +77,12 @@ class MainWindow(QMainWindow):
         act_open.setShortcut(QKeySequence.StandardKey.Open)
         act_open.triggered.connect(self._open_model)
         menu_file.addAction(act_open)
+
+        act_lif = QAction("Convertir .lif a PNG…", self)
+        act_lif.triggered.connect(self._convert_lif_to_png)
+        menu_file.addAction(act_lif)
+
+        menu_file.addSeparator()
 
         act_save = QAction("Guardar modelo como…", self)
         act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
@@ -236,6 +243,25 @@ class MainWindow(QMainWindow):
             self._act_skeleton.setChecked(False)
         self._update_info()
         self.statusBar().showMessage(f"Modelo abierto: {Path(path).name}")
+
+    def _convert_lif_to_png(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir archivo Leica", "", "Archivos Leica (*.lif)"
+        )
+        if not path:
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Carpeta de destino")
+        if not out_dir:
+            return
+
+        try:
+            count = convert_lif_to_png(path, out_dir)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Muni — Error", f"Error al convertir .lif:\n{exc}")
+            return
+        QMessageBox.information(
+            self, "Muni", f"Conversión completa.\n{count} archivos PNG guardados en:\n{out_dir}"
+        )
 
     def _save_model(self) -> None:
         mesh = self.viewport._mesh

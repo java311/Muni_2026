@@ -94,6 +94,9 @@ PySide6/QOpenGLWidget al salir de la aplicación (acceso violado en el GC del
 intérprete). `muni/app/main.py` usa `os._exit` tras el bucle de eventos para
 evitarlo. El resto del funcionamiento (ventana, renderizado, cierre) es normal.
 
+## Papers
+Li, R., Kudryashev, M. & Yakimovich, A. "A weak-labelling and deep learning approach for in-focus object segmentation in 3D widefield microscopy." Scientific Reports 13, 12275 (2023).  (revisar paper)
+
 ## Licencia
 
 GPL-3.0-or-later. El proyecto original Muni se distribuye bajo GNU/GPL.
