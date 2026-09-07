@@ -46,6 +46,7 @@ from muni.reconstruct.dual_contouring import DualContouring
 from muni.reconstruct.marching_cubes import MarchingCubes
 from muni.segment.classical import ClassicalSegmenter
 from muni.segment.focused import FocusedSegmenter
+from muni.segment.meijering import MeijeringSegmenter
 from muni.trace.skimage_tracer import SkimageTracer
 from muni.view.slice_view import SliceView
 from muni.view.worker import run_in_thread
@@ -76,7 +77,12 @@ class ReconstructionWizard(QDialog):
         self.threshold_gray: int = 128
         self.line: tuple[int, int, int, int] | None = None
         self.seed_plane: int = 0
-        self._thread = None
+        self._threads: list = []
+        self._seg_result = None
+        self._pending_mesh = None
+        self._pending_meta = None
+        self._pending_trace_result = None
+        self._pending_trace_spacing = None
 
         # ------------------------------------------------------------- páginas
         self.stack = QStackedWidget()
@@ -229,6 +235,7 @@ class ReconstructionWizard(QDialog):
 
         self.radio_seg_classical = QRadioButton("Clásico (Otsu)")
         self.radio_seg_focused = QRadioButton("Enfoque + Frangi")
+        self.radio_seg_meijering = QRadioButton("Meijering (neuritas)")
         self.radio_seg_classical.setChecked(True)
 
         self._grp_extraction = QButtonGroup(self)
@@ -238,6 +245,7 @@ class ReconstructionWizard(QDialog):
         self._grp_segmentation = QButtonGroup(self)
         self._grp_segmentation.addButton(self.radio_seg_classical)
         self._grp_segmentation.addButton(self.radio_seg_focused)
+        self._grp_segmentation.addButton(self.radio_seg_meijering)
 
         self.btn_run = QPushButton("Reconstruir")
         self.btn_run.clicked.connect(self._run)
@@ -251,16 +259,18 @@ class ReconstructionWizard(QDialog):
 
         self.seg_preview = SliceView()
         self.seg_preview.set_overlay_color(40, 255, 40)
-        self.seg_preview.setMinimumHeight(200)
-        self.seg_preview.hide()
 
-        self.btn_continue = QPushButton("Continuar con extracción")
-        self.btn_continue.clicked.connect(self._start_extraction)
-        self.btn_continue.hide()
+        self.list_seg_planes = QListWidget()
+        self.list_seg_planes.setMaximumHeight(150)
+        self.list_seg_planes.currentRowChanged.connect(self._on_seg_plane_changed)
 
         self.btn_resgment = QPushButton("Volver a segmentar")
         self.btn_resgment.clicked.connect(self._reset_to_segmentation)
         self.btn_resgment.hide()
+
+        self.btn_finish = QPushButton("Finalizar")
+        self.btn_finish.clicked.connect(self._finish)
+        self.btn_finish.hide()
 
         grid = QGridLayout(box)
         grid.addWidget(QLabel("Método de extracción:"), 0, 0)
@@ -270,16 +280,21 @@ class ReconstructionWizard(QDialog):
         grid.addWidget(self.spin_diameter, 2, 1)
         grid.addWidget(QLabel("Umbral de probabilidad (isonivel 3D):"), 3, 0)
         grid.addWidget(self.spin_iso, 3, 1)
-        grid.addWidget(QLabel("Método de segmentación:"), 4, 0)
+        grid.addWidget(QLabel("Método de segmentación:"), 4, 0, 3, 1)
         grid.addWidget(self.radio_seg_classical, 4, 1)
         grid.addWidget(self.radio_seg_focused, 5, 1)
-        grid.addWidget(self.chk_trace, 6, 0, 1, 2)
-        grid.addWidget(self.btn_run, 7, 0, 1, 2)
-        grid.addWidget(self.progress, 8, 0, 1, 2)
-        grid.addWidget(self.lbl_progress, 9, 0, 1, 2)
-        grid.addWidget(self.seg_preview, 10, 0, 1, 2)
-        grid.addWidget(self.btn_continue, 11, 0, 1, 2)
-        grid.addWidget(self.btn_resgment, 12, 0, 1, 2)
+        grid.addWidget(self.radio_seg_meijering, 6, 1)
+        grid.addWidget(self.chk_trace, 7, 0, 1, 2)
+        grid.addWidget(self.btn_run, 8, 0, 1, 2)
+        grid.addWidget(self.progress, 9, 0, 1, 2)
+        grid.addWidget(self.lbl_progress, 10, 0, 1, 2)
+        grid.addWidget(self.btn_resgment, 11, 0, 1, 2)
+        grid.addWidget(self.btn_finish, 12, 0, 1, 2)
+
+        seg_row = 13
+        grid.addWidget(QLabel("Vista de segmentación:"), seg_row, 0)
+        grid.addWidget(self.list_seg_planes, seg_row, 1)
+        grid.addWidget(self.seg_preview, seg_row + 1, 0, 1, 2)
 
         outer = QVBoxLayout(page)
         outer.addWidget(box)
@@ -293,6 +308,8 @@ class ReconstructionWizard(QDialog):
         self.stack.setCurrentIndex(index)
         if index == 2:
             self.slice_view.fit_to_window()
+        if index == 3:
+            self._fill_seg_planes()
 
     def _go_back(self) -> None:
         if self.stack.currentIndex() > 0:
@@ -427,14 +444,15 @@ class ReconstructionWizard(QDialog):
             return
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(False)
-        self.seg_preview.hide()
-        self.btn_continue.hide()
         self.btn_resgment.hide()
+        self.btn_finish.hide()
         self.progress.setValue(0)
         self.lbl_progress.setText("Calibrando...")
+        self._seg_result = None
+        self._fill_seg_planes()
 
         try:
-            self._start_segmentation()
+            self._start_pipeline()
         except Exception as exc:  # noqa: BLE001 - nunca dejar botones bloqueados
             self.btn_run.setEnabled(True)
             self.btn_cancel.setEnabled(True)
@@ -443,7 +461,7 @@ class ReconstructionWizard(QDialog):
             print(f"[muni-error]{os.linesep}{traceback.format_exc()}", file=sys.stderr, flush=True)
             QMessageBox.critical(self, "Muni — Error", f"No se pudo iniciar la segmentación:\n{exc}")
 
-    def _start_segmentation(self) -> None:
+    def _start_pipeline(self) -> None:
         if self.volume is None or self.line is None:
             return
         diameter = float(self.spin_diameter.value())
@@ -461,64 +479,37 @@ class ReconstructionWizard(QDialog):
                 self, "Muni", "No se detectó la dendrita en Z; se usará espaciado 1.0 (sin escala física)."
             )
 
-        use_focused = self.radio_seg_focused.isChecked()
-
         def task(progress):
-            progress(10, "Segmentando...")
-            if use_focused:
+            progress(5, "Segmentando...")
+            if self.radio_seg_meijering.isChecked():
+                seg = MeijeringSegmenter().segment(volume)
+            elif self.radio_seg_focused.isChecked():
                 seg = FocusedSegmenter(denoise=True, keep_largest=True).segment(volume)
             else:
                 seg = ClassicalSegmenter(denoise=True, keep_largest=True).segment(volume)
-            progress(100, "Segmentación completada")
+            progress(50, "Segmentación lista.")
             return seg
 
-        self._thread = run_in_thread(
-            task,
-            on_finished=self._on_segmentation_done,
-            on_error=self._on_error,
-            on_progress=self._on_progress,
-        )
+        self._spawn(task, self._on_segmentation_done)
 
-    def _on_segmentation_done(self, result) -> None:
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(True)
-        if result is None:
+    def _on_segmentation_done(self, seg) -> None:
+        self.btn_resgment.setEnabled(True)
+        if seg is None:
             return
-        self._seg_result = result
-        mid = self.volume.dimz // 2
-        plane = self.volume.plane(mid)
-        self.seg_preview.set_plane(plane, result.mask[mid])
-        self.seg_preview.fit_to_window()
-        self.seg_preview.show()
-        self.btn_continue.show()
+        self._seg_result = seg
+        self._fill_seg_planes()
+        self._on_seg_plane_changed(self.list_seg_planes.currentRow())
         self.btn_resgment.show()
-        n_voxels = int(result.mask.sum())
-        self.lbl_progress.setText(
-            f"Segmentación: {n_voxels} voxels detectados. Revisa la máscara y continúa."
-        )
+        self.start_extraction()
 
-    def _reset_to_segmentation(self) -> None:
-        self.seg_preview.hide()
-        self.btn_continue.hide()
-        self.btn_resgment.hide()
-        self._seg_result = None
-        self.lbl_progress.setText("Listo.")
-        self.progress.setValue(0)
-
-    def _start_extraction(self) -> None:
-        if self.volume is None or self.line is None or not hasattr(self, "_seg_result"):
+    def start_extraction(self) -> None:
+        if self.volume is None or self.line is None or self._seg_result is None:
             return
-        self.btn_continue.setEnabled(False)
-        self.btn_resgment.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.progress.setValue(0)
-
-        diameter = float(self.spin_diameter.value())
         isolevel = float(self.spin_iso.value())
         method = "dual_contouring" if self.radio_dc.isChecked() else "marching_cubes"
         do_trace = self.chk_trace.isChecked()
-        seg = self._seg_result
         volume = self.volume
+        seg = self._seg_result
         spacing = (
             volume.spacing_z_um,
             volume.spacing_xy_um,
@@ -526,18 +517,18 @@ class ReconstructionWizard(QDialog):
         )
 
         def task(progress):
-            progress(10, "Extrayendo superficie...")
+            progress(55, "Extrayendo superficie...")
             extractor = RADIO_METHODS[method]()
             result = extractor.extract(seg.probability, isovalue=isolevel, spacing=spacing)
-            progress(50, "Suavizando malla...")
+            progress(70, "Suavizando malla...")
             mesh = taubin_smooth(result.mesh, iterations=3)
 
             trace_result = None
             if do_trace:
-                progress(70, "Tracing dendrítico...")
+                progress(80, "Tracing dendrítico...")
                 tracer = SkimageTracer()
                 trace_result = tracer.trace(seg.mask, spacing=spacing)
-                progress(90, f"Longitud dendrítica: {trace_result.total_length_um:.1f} µm")
+                progress(95, f"Longitud dendrítica: {trace_result.total_length_um:.1f} µm")
 
             meta = ModelMeta(
                 dimx=volume.dimx,
@@ -547,7 +538,7 @@ class ReconstructionWizard(QDialog):
                 spacing_z_um=volume.spacing_z_um,
                 isolevel=isolevel,
                 objective=self.objective,
-                dendrite_diameter_um=diameter,
+                dendrite_diameter_um=float(self.spin_diameter.value()),
                 segmenter=seg.method,
                 extractor=result.method,
                 source_stack=", ".join(p.name for p in self.paths[:3]),
@@ -555,38 +546,10 @@ class ReconstructionWizard(QDialog):
             progress(100, "Listo")
             return mesh, meta, trace_result, spacing
 
-        self._thread = run_in_thread(
-            task,
-            on_finished=self._on_finished,
-            on_error=self._on_error_extraction,
-            on_progress=self._on_progress,
-        )
+        self._spawn(task, self._on_extraction_done)
 
-    def _on_error_extraction(self, message: str) -> None:
-        self.btn_continue.setEnabled(True)
-        self.btn_resgment.setEnabled(True)
+    def _on_extraction_done(self, result) -> None:
         self.btn_run.setEnabled(True)
-        import sys
-
-        print(f"[muni-error]{os.linesep}{message}", file=sys.stderr, flush=True)
-        QMessageBox.critical(self, "Muni — Error", message)
-
-    def _on_progress(self, percent: int, message: str) -> None:
-        self.progress.setValue(percent)
-        self.lbl_progress.setText(message)
-
-    def _on_error(self, message: str) -> None:
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(True)
-        # El error siempre se imprime en consola además del diálogo.
-        import sys
-
-        print(f"[muni-error]{os.linesep}{message}", file=sys.stderr, flush=True)
-        QMessageBox.critical(self, "Muni — Error", message)
-
-    def _on_finished(self, result) -> None:
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(True)
         if result is None:
             return
         mesh, meta, trace_result, trace_spacing = result
@@ -595,8 +558,69 @@ class ReconstructionWizard(QDialog):
                 self, "Muni", "La malla quedó vacía: revisa el umbral o el método de segmentación."
             )
             return
-        self.mesh = mesh
-        self.meta = meta
-        self.trace_result = trace_result
-        self.trace_spacing = trace_spacing
+        self._pending_mesh = mesh
+        self._pending_meta = meta
+        self._pending_trace_result = trace_result
+        self._pending_trace_spacing = trace_spacing
+        self.btn_finish.show()
+        self.lbl_progress.setText("Extracción completada. Revisa la segmentación y pulsa Finalizar.")
+
+    def _spawn(self, task, on_finished) -> None:
+        thread = run_in_thread(
+            task,
+            on_finished=on_finished,
+            on_error=self._on_error,
+            on_progress=self._on_progress,
+        )
+        self._threads.append(thread)
+
+    def _reset_to_segmentation(self) -> None:
+        self.btn_resgment.hide()
+        self.btn_finish.hide()
+        self.btn_run.setEnabled(True)
+        self._seg_result = None
+        self._pending_mesh = None
+        self._pending_meta = None
+        self._pending_trace_result = None
+        self._pending_trace_spacing = None
+        self.list_seg_planes.clear()
+        self.seg_preview.clear()
+        self.lbl_progress.setText("Listo.")
+        self.progress.setValue(0)
+
+    def _fill_seg_planes(self) -> None:
+        self.list_seg_planes.clear()
+        if self.volume is None:
+            return
+        for i in range(self.volume.dimz):
+            name = self.paths[i].name if i < len(self.paths) else f"Plano {i}"
+            self.list_seg_planes.addItem(name)
+        self.list_seg_planes.setCurrentRow(self.volume.dimz // 2)
+
+    def _on_seg_plane_changed(self, row: int) -> None:
+        if row < 0 or self.volume is None:
+            return
+        plane = self.volume.plane(row)
+        overlay = self._seg_result.mask[row] if self._seg_result is not None else None
+        self.seg_preview.set_plane(plane, overlay)
+        self.seg_preview.fit_to_window()
+
+    def _on_progress(self, percent: int, message: str) -> None:
+        self.progress.setValue(percent)
+        self.lbl_progress.setText(message)
+
+    def _on_error(self, message: str) -> None:
+        self.btn_run.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
+        self.btn_resgment.setEnabled(True)
+        import sys
+
+        print(f"[muni-error]{os.linesep}{message}", file=sys.stderr, flush=True)
+        QMessageBox.critical(self, "Muni — Error", message)
+
+    def _finish(self) -> None:
+        self.mesh = self._pending_mesh
+        self.meta = self._pending_meta
+        self.trace_result = self._pending_trace_result
+        self.trace_spacing = self._pending_trace_spacing
         self.accept()

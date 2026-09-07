@@ -59,17 +59,14 @@ def test_wizard_reconstruction_runs(app, method):
 
     wiz._run()
     deadline = time.monotonic() + 90.0
-    while not hasattr(wiz, "_seg_result") or wiz._seg_result is None:
+    while wiz.btn_finish.isHidden():
         if time.monotonic() > deadline:
-            pytest.fail("Segmentación no completada")
+            pytest.fail("Reconstrucción no completada")
         _pump(app, 0.3)
+    _pump(app, 0.5)
 
-    wiz._start_extraction()
-    deadline = time.monotonic() + 90.0
-    while wiz.mesh is None:
-        if time.monotonic() > deadline:
-            pytest.fail("Extracción no completada")
-        _pump(app, 0.3)
+    assert wiz._seg_result is not None, "No hay resultado de segmentación"
+    wiz._finish()
     _pump(app, 0.5)
 
     assert wiz.mesh is not None, "La reconstrucción no produjo malla"
