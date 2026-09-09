@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from muni.core.meshdata import MeshData
-from muni.reconstruct.extractor import SurfaceExtractor, SurfaceExtractionResult
+from muni.reconstruct.extractor import SurfaceExtractionResult, SurfaceExtractor
 from muni.reconstruct.mc_tables import EDGE_TABLE, TRI_TABLE
 
 # Vértices del cubo en orden 0..7, en coordenadas (z, y, x) relativas.
@@ -32,9 +32,18 @@ CORNER_OFFSETS = np.array(
 
 # Cada arista conecta dos vértices del cubo (orden canónico 0..11).
 EDGE_CORNERS = (
-    (0, 1), (1, 2), (2, 3), (3, 0),   # aristas inferiores
-    (4, 5), (5, 6), (6, 7), (7, 4),   # aristas superiores
-    (0, 4), (1, 5), (2, 6), (3, 7),   # aristas verticales
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),  # aristas inferiores
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),  # aristas superiores
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),  # aristas verticales
 )
 
 
@@ -87,9 +96,7 @@ class MarchingCubes(SurfaceExtractor):
             v = f[czv, cyv, cxv]  # (ny-1, nx-1, 8)
 
             inside = v >= iso if self.inside_high else v <= iso
-            cubeindex = np.sum(
-                inside.astype(np.uint8) << np.arange(8, dtype=np.uint8), axis=-1
-            )
+            cubeindex = np.sum(inside.astype(np.uint8) << np.arange(8, dtype=np.uint8), axis=-1)
             edge_mask = np.take(EDGE_TABLE, cubeindex)  # (ny-1, nx-1)
             actives = np.argwhere(edge_mask != 0)  # (K, 2): fila y, col x
 
@@ -116,21 +123,21 @@ class MarchingCubes(SurfaceExtractor):
 
                     pos = np.array(
                         [
-                            (cz[a] + mu * (cz[b] - cz[a])) * sz,
-                            (cy[a] + mu * (cy[b] - cy[a])) * sy,
                             (cx[a] + mu * (cx[b] - cx[a])) * sx,
+                            (cy[a] + mu * (cy[b] - cy[a])) * sy,
+                            (cz[a] + mu * (cz[b] - cz[a])) * sz,
                         ],
                         dtype=np.float32,
                     )
                     # Normal = gradiente interpolado, orientado hacia fuera.
                     grad = sign * np.array(
                         [
-                            gz[cz[a], cy[a], cx[a]]
-                            + mu * (gz[cz[b], cy[b], cx[b]] - gz[cz[a], cy[a], cx[a]]),
-                            gy[cz[a], cy[a], cx[a]]
-                            + mu * (gy[cz[b], cy[b], cx[b]] - gy[cz[a], cy[a], cx[a]]),
                             gx[cz[a], cy[a], cx[a]]
                             + mu * (gx[cz[b], cy[b], cx[b]] - gx[cz[a], cy[a], cx[a]]),
+                            gy[cz[a], cy[a], cx[a]]
+                            + mu * (gy[cz[b], cy[b], cx[b]] - gy[cz[a], cy[a], cx[a]]),
+                            gz[cz[a], cy[a], cx[a]]
+                            + mu * (gz[cz[b], cy[b], cx[b]] - gz[cz[a], cy[a], cx[a]]),
                         ],
                         dtype=np.float32,
                     )

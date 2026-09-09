@@ -24,8 +24,8 @@ from PySide6.QtOpenGL import (
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from muni.core.meshdata import MeshData
-from muni.view.camera import OrbitCamera
 from muni.view import glconstants as GL
+from muni.view.camera import OrbitCamera
 
 _GL_DEBUG = os.environ.get("MUNI_GL_DEBUG") == "1"
 
@@ -38,6 +38,7 @@ def _dbg(*args) -> None:
 def _err(*args) -> None:
     """Error GL: siempre visible en consola (no depende de MUNI_GL_DEBUG)."""
     print("[gl-error]", *args, file=sys.stderr, flush=True)
+
 
 _VERT_MESH = """
 #version 330 core
@@ -189,7 +190,9 @@ class GLViewport(QOpenGLWidget):
         self._line_dirty = True
         self.update()
 
-    def set_skeleton(self, coords: np.ndarray, parents: np.ndarray, spacing: tuple[float, float, float]) -> None:
+    def set_skeleton(
+        self, coords: np.ndarray, parents: np.ndarray, spacing: tuple[float, float, float]
+    ) -> None:
         """Carga esqueleto para renderizado.
 
         Parameters
@@ -215,17 +218,23 @@ class GLViewport(QOpenGLWidget):
         for i in range(len(parents)):
             p = int(parents[i])
             if p >= 0:
-                # Convención del mesh (marching cubes): [Z*sz, Y*sy, X*sx].
-                v0 = np.array([
-                    coords[i, 0] * spacing[0] + offset,
-                    coords[i, 1] * spacing[1],
-                    coords[i, 2] * spacing[2],
-                ], dtype=np.float32)
-                v1 = np.array([
-                    coords[p, 0] * spacing[0] + offset,
-                    coords[p, 1] * spacing[1],
-                    coords[p, 2] * spacing[2],
-                ], dtype=np.float32)
+                # Convención del mesh: [X*sx, Y*sy, Z*sz].
+                v0 = np.array(
+                    [
+                        coords[i, 2] * spacing[2],
+                        coords[i, 1] * spacing[1],
+                        coords[i, 0] * spacing[0] + offset,
+                    ],
+                    dtype=np.float32,
+                )
+                v1 = np.array(
+                    [
+                        coords[p, 2] * spacing[2],
+                        coords[p, 1] * spacing[1],
+                        coords[p, 0] * spacing[0] + offset,
+                    ],
+                    dtype=np.float32,
+                )
                 edges.append((v0, v1))
 
         if edges:
@@ -338,11 +347,7 @@ class GLViewport(QOpenGLWidget):
         return prog
 
     def _mesh_ready(self) -> bool:
-        return (
-            self._mesh is not None
-            and not self._mesh.is_empty
-            and self._mesh_vao is not None
-        )
+        return self._mesh is not None and not self._mesh.is_empty and self._mesh_vao is not None
 
     def upload_mesh(self) -> None:
         gl = self._gl
@@ -413,7 +418,11 @@ class GLViewport(QOpenGLWidget):
                     segments.append((np.array([a, b], np.float32), col))
 
         # Esqueleto: aristas del árbol dendrítico.
-        if self._show_skeleton and self._skeleton_verts is not None and len(self._skeleton_verts) > 0:
+        if (
+            self._show_skeleton
+            and self._skeleton_verts is not None
+            and len(self._skeleton_verts) > 0
+        ):
             segments.append((self._skeleton_verts, (1.0, 0.3, 0.3)))
 
         # Concatenar en un solo VBO, recordando (offset, count, color).
@@ -594,15 +603,29 @@ def _box_edges(lo: np.ndarray, hi: np.ndarray) -> list[tuple[np.ndarray, np.ndar
     hi = np.asarray(hi, np.float32)
     corners = np.array(
         [
-            [lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]],
-            [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]],
-            [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]],
+            [lo[0], lo[1], lo[2]],
+            [hi[0], lo[1], lo[2]],
+            [hi[0], hi[1], lo[2]],
+            [lo[0], hi[1], lo[2]],
+            [lo[0], lo[1], hi[2]],
+            [hi[0], lo[1], hi[2]],
+            [hi[0], hi[1], hi[2]],
+            [lo[0], hi[1], hi[2]],
         ],
         dtype=np.float32,
     )
     edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
     ]
     return [(corners[a], corners[b]) for a, b in edges]

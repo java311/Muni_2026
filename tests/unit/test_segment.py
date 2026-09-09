@@ -1,4 +1,4 @@
-"""Pruebas de segmentación (clásica y enfoque+Frangi)."""
+"""Pruebas de segmentación (clásica, enfoque)."""
 
 import numpy as np
 
@@ -6,7 +6,6 @@ from muni.core.volume import Volume3D
 from muni.segment.classical import ClassicalSegmenter
 from muni.segment.connected import connected_components, largest_component
 from muni.segment.focused import FocusedSegmenter
-from muni.segment.meijering import MeijeringSegmenter
 from muni.segment.morphology import binary_close, binary_dilate, binary_erode, binary_open
 from muni.segment.threshold import adaptive_mean_threshold, otsu_threshold
 
@@ -112,29 +111,4 @@ def test_focused_segmenter_with_denoise():
     assert result.mask.any()
 
 
-def test_meijering_segmenter_end_to_end():
-    rng = np.random.default_rng(7)
-    z, y, x = 8, 48, 48
-    yy, xx = np.mgrid[0:y, 0:x]
-    bg = np.full((z, y, x), 200.0, dtype=np.float32)
-    for zi in range(z):
-        r = 8 + zi
-        disk = (yy - 24) ** 2 + (xx - 24) ** 2 < r**2
-        bg[zi, disk] = 50.0
-    bg += rng.normal(0, 8, bg.shape).astype(np.float32)
-    vol = Volume3D(bg)
 
-    seg = MeijeringSegmenter()
-    result = seg.segment(vol)
-    assert result.method == "meijering"
-    assert result.probability.shape == vol.shape
-    assert result.probability.min() >= 0 and result.probability.max() <= 1
-    assert result.mask.shape == vol.shape
-    assert result.mask.any()
-
-
-def test_meijering_segmenter_flat_slice_is_empty():
-    vol = Volume3D(np.full((4, 16, 16), 128.0, dtype=np.float32))
-    result = MeijeringSegmenter().segment(vol)
-    assert result.mask.sum() == 0
-    assert result.probability.max() <= 1

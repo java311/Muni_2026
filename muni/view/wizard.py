@@ -46,7 +46,6 @@ from muni.reconstruct.dual_contouring import DualContouring
 from muni.reconstruct.marching_cubes import MarchingCubes
 from muni.segment.classical import ClassicalSegmenter
 from muni.segment.focused import FocusedSegmenter
-from muni.segment.meijering import MeijeringSegmenter
 from muni.trace.skimage_tracer import SkimageTracer
 from muni.view.slice_view import SliceView
 from muni.view.worker import run_in_thread
@@ -234,8 +233,7 @@ class ReconstructionWizard(QDialog):
         self.chk_trace.setChecked(False)
 
         self.radio_seg_classical = QRadioButton("Clásico (Otsu)")
-        self.radio_seg_focused = QRadioButton("Enfoque + Frangi")
-        self.radio_seg_meijering = QRadioButton("Meijering (neuritas)")
+        self.radio_seg_focused = QRadioButton("Enfoque")
         self.radio_seg_classical.setChecked(True)
 
         self._grp_extraction = QButtonGroup(self)
@@ -245,7 +243,6 @@ class ReconstructionWizard(QDialog):
         self._grp_segmentation = QButtonGroup(self)
         self._grp_segmentation.addButton(self.radio_seg_classical)
         self._grp_segmentation.addButton(self.radio_seg_focused)
-        self._grp_segmentation.addButton(self.radio_seg_meijering)
 
         self.btn_run = QPushButton("Reconstruir")
         self.btn_run.clicked.connect(self._run)
@@ -280,18 +277,17 @@ class ReconstructionWizard(QDialog):
         grid.addWidget(self.spin_diameter, 2, 1)
         grid.addWidget(QLabel("Umbral de probabilidad (isonivel 3D):"), 3, 0)
         grid.addWidget(self.spin_iso, 3, 1)
-        grid.addWidget(QLabel("Método de segmentación:"), 4, 0, 3, 1)
+        grid.addWidget(QLabel("Método de segmentación:"), 4, 0, 2, 1)
         grid.addWidget(self.radio_seg_classical, 4, 1)
         grid.addWidget(self.radio_seg_focused, 5, 1)
-        grid.addWidget(self.radio_seg_meijering, 6, 1)
-        grid.addWidget(self.chk_trace, 7, 0, 1, 2)
-        grid.addWidget(self.btn_run, 8, 0, 1, 2)
-        grid.addWidget(self.progress, 9, 0, 1, 2)
-        grid.addWidget(self.lbl_progress, 10, 0, 1, 2)
-        grid.addWidget(self.btn_resgment, 11, 0, 1, 2)
-        grid.addWidget(self.btn_finish, 12, 0, 1, 2)
+        grid.addWidget(self.chk_trace, 6, 0, 1, 2)
+        grid.addWidget(self.btn_run, 7, 0, 1, 2)
+        grid.addWidget(self.progress, 8, 0, 1, 2)
+        grid.addWidget(self.lbl_progress, 9, 0, 1, 2)
+        grid.addWidget(self.btn_resgment, 10, 0, 1, 2)
+        grid.addWidget(self.btn_finish, 11, 0, 1, 2)
 
-        seg_row = 13
+        seg_row = 12
         grid.addWidget(QLabel("Vista de segmentación:"), seg_row, 0)
         grid.addWidget(self.list_seg_planes, seg_row, 1)
         grid.addWidget(self.seg_preview, seg_row + 1, 0, 1, 2)
@@ -481,9 +477,7 @@ class ReconstructionWizard(QDialog):
 
         def task(progress):
             progress(5, "Segmentando...")
-            if self.radio_seg_meijering.isChecked():
-                seg = MeijeringSegmenter().segment(volume)
-            elif self.radio_seg_focused.isChecked():
+            if self.radio_seg_focused.isChecked():
                 seg = FocusedSegmenter(denoise=True, keep_largest=True).segment(volume)
             else:
                 seg = ClassicalSegmenter(denoise=True, keep_largest=True).segment(volume)

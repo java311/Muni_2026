@@ -111,24 +111,29 @@ class OrbitCamera:
     def fit(self, bounds_min: np.ndarray, bounds_max: np.ndarray) -> None:
         """Encuadra la caja delimitadora.
 
-        Posiciona la cámara a lo largo del eje más largo del modelo, mirando
-        hacia el centro desde fuera, con un ángulo de pitch suave para
+        Posiciona la cámara mirando de frente la cara más grande del modelo
+        (a lo largo del eje más corto), con un ángulo de pitch suave para
         dar profundidad.
         """
-        center = (np.asarray(bounds_min, dtype=np.float32) + np.asarray(bounds_max, dtype=np.float32)) / 2.0
+        center = (
+            np.asarray(bounds_min, dtype=np.float32) + np.asarray(bounds_max, dtype=np.float32)
+        ) / 2.0
         size = np.asarray(bounds_max, dtype=np.float32) - np.asarray(bounds_min, dtype=np.float32)
         radius = float(np.linalg.norm(size) / 2.0) or 1.0
         self.target = center
         self.distance = radius / np.tan(np.deg2rad(self.fov) / 2.0) * 1.4
         ex, ey, ez = float(size[0]), float(size[1]), float(size[2])
         pitch_deg = 15.0
-        if ez >= ex and ez >= ey:
-            self.yaw = -90.0
+        if ez <= ex and ez <= ey:
+            # Z más corto → mirar de frente por Z (cara XY).
+            self.yaw = 0.0
             self.pitch = pitch_deg
-        elif ey >= ex and ey >= ez:
+        elif ey <= ex and ey <= ez:
+            # Y más corto → mirar de frente por Y (cara XZ).
             self.pitch = 90.0 - pitch_deg
             self.yaw = 0.0
         else:
+            # X más corto → mirar de frente por X (cara YZ).
             self.yaw = 90.0
             self.pitch = pitch_deg
 

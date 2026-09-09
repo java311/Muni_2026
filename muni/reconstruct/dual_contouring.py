@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 from muni.core.meshdata import MeshData
-from muni.reconstruct.extractor import SurfaceExtractor, SurfaceExtractionResult
+from muni.reconstruct.extractor import SurfaceExtractionResult, SurfaceExtractor
 from muni.reconstruct.marching_cubes import CORNER_OFFSETS, EDGE_CORNERS, _gradient
 
 
@@ -44,6 +44,34 @@ def _solve_qef(points: np.ndarray, normals: np.ndarray, max_offset: float = 5.0)
         return p.astype(np.float32)
     except np.linalg.LinAlgError:
         return centroid.astype(np.float32)
+
+
+def _trilinear_interp(arr: np.ndarray, pz: float, py: float, px: float) -> float:
+    """Interpolación trilineal de un array 3D en coordenadas continuas (z, y, x)."""
+    z0 = max(0, min(int(pz), arr.shape[0] - 2))
+    y0 = max(0, min(int(py), arr.shape[1] - 2))
+    x0 = max(0, min(int(px), arr.shape[2] - 2))
+    fz = min(max(pz - z0, 0.0), 1.0)
+    fy = min(max(py - y0, 0.0), 1.0)
+    fx = min(max(px - x0, 0.0), 1.0)
+    c000 = arr[z0, y0, x0]
+    c001 = arr[z0, y0, x0 + 1]
+    c010 = arr[z0, y0 + 1, x0]
+    c011 = arr[z0, y0 + 1, x0 + 1]
+    c100 = arr[z0 + 1, y0, x0]
+    c101 = arr[z0 + 1, y0, x0 + 1]
+    c110 = arr[z0 + 1, y0 + 1, x0]
+    c111 = arr[z0 + 1, y0 + 1, x0 + 1]
+    return (
+        c000 * (1 - fz) * (1 - fy) * (1 - fx)
+        + c001 * (1 - fz) * (1 - fy) * fx
+        + c010 * (1 - fz) * fy * (1 - fx)
+        + c011 * (1 - fz) * fy * fx
+        + c100 * fz * (1 - fy) * (1 - fx)
+        + c101 * fz * (1 - fy) * fx
+        + c110 * fz * fy * (1 - fx)
+        + c111 * fz * fy * fx
+    )
 
 
 class DualContouring(SurfaceExtractor):
@@ -113,20 +141,20 @@ class DualContouring(SurfaceExtractor):
                     mu = float(np.clip(mu, 0.0, 1.0))
                     pos = np.array(
                         [
-                            (czc[a] + mu * (czc[b] - czc[a])) * sz,
-                            (cyc[a] + mu * (cyc[b] - cyc[a])) * sy,
                             (cxc[a] + mu * (cxc[b] - cxc[a])) * sx,
+                            (cyc[a] + mu * (cyc[b] - cyc[a])) * sy,
+                            (czc[a] + mu * (czc[b] - czc[a])) * sz,
                         ],
                         dtype=np.float32,
                     )
                     grad = np.array(
                         [
-                            gz[czc[a], cyc[a], cxc[a]]
-                            + mu * (gz[czc[b], cyc[b], cxc[b]] - gz[czc[a], cyc[a], cxc[a]]),
-                            gy[czc[a], cyc[a], cxc[a]]
-                            + mu * (gy[czc[b], cyc[b], cxc[b]] - gy[czc[a], cyc[a], cxc[a]]),
                             gx[czc[a], cyc[a], cxc[a]]
                             + mu * (gx[czc[b], cyc[b], cxc[b]] - gx[czc[a], cyc[a], cxc[a]]),
+                            gy[czc[a], cyc[a], cxc[a]]
+                            + mu * (gy[czc[b], cyc[b], cxc[b]] - gy[czc[a], cyc[a], cxc[a]]),
+                            gz[czc[a], cyc[a], cxc[a]]
+                            + mu * (gz[czc[b], cyc[b], cxc[b]] - gz[czc[a], cyc[a], cxc[a]]),
                         ],
                         dtype=np.float32,
                     )
@@ -138,7 +166,18 @@ class DualContouring(SurfaceExtractor):
                 pts_a = np.stack(pts)
                 nrm_a = np.stack(nrm)
                 vertex = _solve_qef(pts_a, nrm_a)
-                normal = sign * nrm_a.mean(axis=0)
+
+                vz = vertex[2] / sz
+                vy = vertex[1] / sy
+                vx = vertex[0] / sx
+                normal = sign * np.array(
+                    [
+                        _trilinear_interp(gx, vz, vy, vx),
+                        _trilinear_interp(gy, vz, vy, vx),
+                        _trilinear_interp(gz, vz, vy, vx),
+                    ],
+                    dtype=np.float32,
+                )
                 ln = np.linalg.norm(normal)
                 if ln > 0:
                     normal = normal / ln

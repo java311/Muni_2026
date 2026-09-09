@@ -79,7 +79,7 @@ class FocusedSegmenter(Segmenter):
         for z in range(data.shape[0]):
             sharpness[z] = _local_std(data[z], radius=self.sharpness_radius)
 
-        s_thresh = float(np.percentile(sharpness[base_mask], 50)) if base_mask.any() else 0.0
+        s_thresh = float(np.percentile(sharpness[base_mask], 85)) if base_mask.any() else 0.0
         sharp_mask = sharpness > s_thresh
 
         mask = base_mask & sharp_mask
