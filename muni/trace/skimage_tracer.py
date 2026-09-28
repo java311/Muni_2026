@@ -1,66 +1,137 @@
-"""Tracing dendrítico usando scikit-image (skeletonize_3d) y skan."""
+"""Tracing dendrítico usando scikit-image (skeletonize) + esqueleto tipado.
+
+El resultado es un **bosque** de esqueletos (uno por componente conexo de la
+máscara) con nodos tipados (soma, axón, dendrita). La raíz se sitúa en el soma
+detectado, no en un punto final arbitrario.
+
+La aritmética de grafo vive en :mod:`muni.trace.graph` (compartida con la
+edición interactiva del esqueleto).
+"""
 
 from __future__ import annotations
 
-from collections import deque
-
 import numpy as np
 from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import label as _label
 from skimage.morphology import skeletonize
 
-from muni.trace.base import Tracer, TraceResult
+from muni.trace.base import SWC_AXON, SWC_DENDRITE, SWC_SOMA, Tracer, TraceResult
+from muni.trace.graph import (
+    branch_labels,
+    branch_start,
+    build_adjacency,
+    build_forest,
+    children_of,
+    compact,
+    prune_spurs,
+    to_world,
+    total_length,
+)
+from muni.trace.soma import clamp_soma, detect_soma
 
 
-def _build_adjacency(skeleton: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Construye grafo de adyacencia a partir de un esqueleto binario 3D.
+def _classify(
+    parents: np.ndarray,
+    radii: np.ndarray,
+    branch_labels: np.ndarray,
+    node_comp: np.ndarray,
+    soma,
+    center_grid: np.ndarray,
+    spacing: tuple[float, float, float],
+) -> np.ndarray:
+    """Asigna tipos SWC por rama: soma, axón (fino) y dendritas.
 
-    Returns
-    -------
-    coords_grid:
-        Coordenadas ``(N, 3)`` de los voxels del esqueleto en espacio de grid.
-    adj_list:
-        Lista de adyacencia como array de objetos.
-    degree:
-        Grado de cada nodo.
+    El soma es el nodo más cercano a la esfera detectada. El axón es la rama
+    claramente más fina que la referencia (mediana de las ramas primarias) y se
+    propaga por sus ramas hijas mientras sigan finas; el resto son dendritas.
+
+    ponytail: heurística; la clasificación definitiva es manual (paso de edición).
     """
-    coords = np.argwhere(skeleton > 0)  # (N, 3) — (z, y, x)
-    n = len(coords)
-    if n == 0:
-        return np.empty((0, 3), dtype=np.int64), np.empty(0, dtype=object), np.zeros(0, dtype=np.int64)
+    n = len(parents)
+    types = np.full(n, SWC_DENDRITE, dtype=np.int64)
+    if soma is None:
+        return types
 
-    # Indexar voxels en espacio 1D para búsqueda rápida.
-    max_dim = max(coords.max(axis=0) + 1)
-    idx = coords[:, 0] * max_dim * max_dim + coords[:, 1] * max_dim + coords[:, 2]
-    voxel_set = set(idx.tolist())
-    voxel_to_node = {v: i for i, v in enumerate(idx.tolist())}
+    world = to_world(center_grid, spacing)
+    dist = np.linalg.norm(world - soma.center_um, axis=1)
+    root = int(np.argmin(dist))
+    if dist[root] > 4.0 * soma.radius_um:
+        return types
 
-    neighbors_26 = []
-    for dz in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                if dz == 0 and dy == 0 and dx == 0:
-                    continue
-                neighbors_26.append((dz, dy, dx))
+    types[root] = SWC_SOMA
+    soma_comp = node_comp[root]
 
-    adj_list = np.empty(n, dtype=object)
-    degree = np.zeros(n, dtype=np.int64)
-    for i in range(n):
-        adj_list[i] = []
+    branch_radius: dict[int, float] = {}
+    members: dict[int, np.ndarray] = {}
+    parent_branch: dict[int, int] = {}
+    start_node: dict[int, int] = {}
+    for branch in np.unique(branch_labels):
+        idx = np.flatnonzero(branch_labels == branch)
+        if node_comp[idx[0]] != soma_comp:
+            continue
+        key = int(branch)
+        start = branch_start(idx, parents)
+        # Mediana, no media: la parte proximal (dentro del soma) es gruesa y no
+        # debe dominar el grosor característico de la rama.
+        branch_radius[key] = float(np.median(radii[idx]))
+        members[key] = idx
+        start_node[key] = start
+        p = int(parents[start])
+        parent_branch[key] = int(branch_labels[p]) if p >= 0 else -1
 
-    for i, (z, y, x) in enumerate(coords):
-        for dz, dy, dx in neighbors_26:
-            nz, ny, nx = z + dz, y + dy, x + dx
-            v = nz * max_dim * max_dim + ny * max_dim + nx
-            if v in voxel_set:
-                j = voxel_to_node[v]
-                adj_list[i].append(j)
-                degree[i] += 1
+    primary = [
+        b
+        for b, start in start_node.items()
+        if int(parents[start]) == root and len(members[b]) >= 2
+    ]
+    if not primary:
+        return types
+    reference = float(np.median([branch_radius[b] for b in primary]))
+    if reference <= 0.0:
+        return types
 
-    return coords, adj_list, degree
+    # Axón: la rama primaria claramente más fina (candidata) y más larga.
+    thinnest = min(primary, key=lambda b: branch_radius[b])
+    best_branch: int | None = None
+    if branch_radius[thinnest] <= 0.7 * reference:
+        best_branch = thinnest
+
+    if best_branch is not None:
+        branch_children: dict[int, list[int]] = {}
+        for b, pb in parent_branch.items():
+            branch_children.setdefault(pb, []).append(b)
+        threshold = 1.3 * branch_radius[best_branch]
+        stack = [best_branch]
+        marked: set[int] = set()
+        while stack:
+            b = stack.pop()
+            if b in marked:
+                continue
+            marked.add(b)
+            for child in branch_children.get(b, []):
+                if branch_radius.get(child, 0.0) <= threshold:
+                    stack.append(child)
+        for b in marked:
+            types[members[b]] = SWC_AXON
+
+    types[root] = SWC_SOMA
+    return types
+
+
+def _empty_result(spacing: tuple[float, float, float]) -> TraceResult:
+    return TraceResult(
+        coords=np.empty((0, 3)),
+        radii=np.empty(0),
+        parents=np.empty(0, dtype=np.int64),
+        branch_labels=np.empty(0, dtype=np.int64),
+        total_length_um=0.0,
+        spacing=spacing,
+        method="skimage",
+    )
 
 
 class SkimageTracer(Tracer):
-    """Tracing usando skeletonize_3d (Lee94) + skan para análisis."""
+    """Tracing con skeletonize (Lee94): forest + soma + tipos SWC."""
 
     name = "skimage"
 
@@ -68,119 +139,63 @@ class SkimageTracer(Tracer):
         self,
         mask: np.ndarray,
         spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        *,
+        min_spur_um: float = 2.0,
     ) -> TraceResult:
         mask = np.asarray(mask, dtype=bool)
         if mask.ndim != 3:
             raise ValueError(f"mask debe ser 3D, se recibió forma {mask.shape}.")
         if mask.sum() == 0:
             raise ValueError("mask está vacía (todos False).")
+        spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
-        # 1. Esqueleto.
+        soma = detect_soma(mask, spacing)
+
         skeleton = skeletonize(mask)
-
-        # 2. Distance transform para radios.
         edt = distance_transform_edt(mask, sampling=spacing)
 
-        # 3. Construir grafo.
-        coords_grid, adj_list, degree = _build_adjacency(skeleton)
+        coords_grid, adj_list, degree = build_adjacency(skeleton)
         n = len(coords_grid)
         if n == 0:
-            return TraceResult(
-                coords=np.empty((0, 3)),
-                radii=np.empty(0),
-                parents=np.empty(0, dtype=np.int64),
-                branch_labels=np.empty(0, dtype=np.int64),
-                total_length_um=0.0,
-                spacing=tuple(spacing),
-                method=self.name,
-            )
+            return _empty_result(spacing)
 
-        # 4. Radios sobre el esqueleto.
         radii = np.array([edt[z, y, x] for z, y, x in coords_grid], dtype=np.float64)
 
-        # 5. Seleccionar raíz: punto final con radio más grande (soma aproximado).
-        endpoints = np.where(degree == 1)[0]
-        if len(endpoints) == 0:
-            root = int(np.argmax(radii))
-        else:
-            root = int(endpoints[np.argmax(radii[endpoints])])
+        # Acotar el soma al grosor de las neuritas: el pico de la EDT puede caer
+        # en un cruce de neuritas gruesas y quedar sobredimensionado.
+        soma = clamp_soma(soma, float(np.median(radii)))
 
-        # 6. BFS para construir parents.
-        parents = np.full(n, -1, dtype=np.int64)
-        visited = np.zeros(n, dtype=bool)
-        visited[root] = True
-        queue = deque([root])
+        # Componente de la máscara a la que pertenece cada voxel del esqueleto.
+        comp, _ = _label(mask, structure=np.ones((3, 3, 3), dtype=bool))
+        node_comp = comp[coords_grid[:, 0], coords_grid[:, 1], coords_grid[:, 2]]
 
-        while queue:
-            node = queue.popleft()
-            for nb in adj_list[node]:
-                if not visited[nb]:
-                    visited[nb] = True
-                    parents[nb] = node
-                    queue.append(nb)
+        parents = build_forest(coords_grid, adj_list, degree, radii, node_comp, soma, spacing)
 
-        # 7. Asignar etiquetas de rama.
-        # Una nueva rama empieza en cada nodo de ramificación (grado >= 3).
-        branch_labels = np.zeros(n, dtype=np.int64)
-        branch_counter = 0
+        # Poda de espolones del esqueleto (ruido), nunca del tronco.
+        keep = prune_spurs(coords_grid, parents, spacing, min_spur_um)
+        coords_grid, parents, radii, node_comp = compact(
+            coords_grid, parents, radii, node_comp, keep
+        )
+        n = len(coords_grid)
+        if n == 0:
+            return _empty_result(spacing)
 
-        # Encontrar raíces de subárboles: nodos cuyo padre es un branch point.
-        child_of_branch_point = []
-        for i in range(n):
-            p = parents[i]
-            if p == -1:
-                continue
-            if degree[p] >= 3:
-                child_of_branch_point.append(i)
+        children = children_of(parents)
+        labels = branch_labels(parents, children)
+        length = total_length(coords_grid, parents, spacing)
 
-        # BFS desde cada hijo de branch point para etiquetar ramas.
-        labeled = np.zeros(n, dtype=bool)
-        labeled[root] = True
-        # Marcar nodos del tronco principal.
-        node = root
-        while parents[node] != -1 or degree[node] >= 2:
-            # Seguir el tronco hasta un branch point.
-            next_nodes = [nb for nb in adj_list[node] if parents[nb] == node and not labeled[nb]]
-            if len(next_nodes) == 0:
-                break
-            if len(next_nodes) == 1:
-                labeled[node] = True
-                node = next_nodes[0]
-                labeled[node] = True
-            else:
-                # Branch point encontrado.
-                break
-
-        # Etiquetar cada subárbol que empieza en un branch point.
-        for child_root in child_of_branch_point:
-            if branch_labels[child_root] != 0:
-                continue
-            branch_counter += 1
-            q = deque([child_root])
-            branch_labels[child_root] = branch_counter
-            while q:
-                nd = q.popleft()
-                for nb in adj_list[nd]:
-                    if parents[nb] == nd and branch_labels[nb] == 0:
-                        branch_labels[nb] = branch_counter
-                        q.append(nb)
-
-        # 8. Longitud total.
-        total_length = 0.0
-        for i in range(n):
-            p = parents[i]
-            if p != -1:
-                dz = (coords_grid[i, 0] - coords_grid[p, 0]) * spacing[0]
-                dy = (coords_grid[i, 1] - coords_grid[p, 1]) * spacing[1]
-                dx = (coords_grid[i, 2] - coords_grid[p, 2]) * spacing[2]
-                total_length += np.sqrt(dz * dz + dy * dy + dx * dx)
+        types = _classify(parents, radii, labels, node_comp, soma, coords_grid, spacing)
 
         return TraceResult(
             coords=coords_grid.astype(np.float64),
             radii=radii,
             parents=parents,
-            branch_labels=branch_labels,
-            total_length_um=total_length,
-            spacing=tuple(spacing),
+            branch_labels=labels,
+            total_length_um=length,
+            spacing=spacing,
             method=self.name,
+            types=types,
+            soma_center_um=soma.center_um if soma is not None else None,
+            soma_radii_um=soma.radii_um if soma is not None else None,
+            soma_axes=soma.axes if soma is not None else None,
         )

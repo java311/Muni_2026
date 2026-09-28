@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from muni.trace.base import TraceResult
+from muni.trace.base import SWC_SOMA, TraceResult
 
 
 def write_swc(
@@ -14,9 +14,11 @@ def write_swc(
     result: TraceResult,
     *,
     spacing: tuple[float, float, float] | None = None,
-    swc_type: int = 3,
 ) -> Path:
     """Escribe un archivo SWC a partir de un TraceResult.
+
+    Se respetan los tipos SWC de cada nodo (``result.types``): soma=1, axón=2,
+    dendrita=3, espina=4.
 
     Parameters
     ----------
@@ -27,8 +29,6 @@ def write_swc(
     spacing:
         Espaciado ``(dz, dy, dx)`` en micras. Si es None, usa
         ``result.spacing``.
-    swc_type:
-        Tipo SWC por defecto (3 = dendrita).
 
     Returns
     -------
@@ -43,7 +43,7 @@ def write_swc(
 
     n = result.n_nodes
     ids = np.arange(1, n + 1, dtype=np.int64)
-    types = np.full(n, swc_type, dtype=np.int64)
+    types = result.types.astype(np.int64)
 
     parents = result.parents.copy()
     parents[parents != -1] += 1
@@ -114,6 +114,7 @@ def load_swc(path: str | Path) -> tuple[TraceResult, tuple[float, float, float]]
     # Calcular longitud total.
     coords_arr = np.array(coords, dtype=np.float64)
     radii_arr = np.array(radii, dtype=np.float64)
+    types_arr = np.array(types, dtype=np.int64)
     total_length = 0.0
     for i in range(n):
         p = int(parents[i])
@@ -123,6 +124,21 @@ def load_swc(path: str | Path) -> tuple[TraceResult, tuple[float, float, float]]
             dx = (coords_arr[i, 2] - coords_arr[p, 2]) * spacing[2]
             total_length += np.sqrt(dz * dz + dy * dy + dx * dx)
 
+    # Reconstruir el elipsoide del soma a partir de los nodos tipo 1.
+    soma_center = soma_radii = None
+    soma_nodes = np.flatnonzero(types_arr == SWC_SOMA)
+    if len(soma_nodes):
+        world = np.column_stack(
+            (
+                coords_arr[soma_nodes, 2] * spacing[2],
+                coords_arr[soma_nodes, 1] * spacing[1],
+                coords_arr[soma_nodes, 0] * spacing[0],
+            )
+        )
+        soma_center = world.mean(axis=0)
+        radius = float(radii_arr[soma_nodes].mean())
+        soma_radii = np.full(3, radius, dtype=np.float64)
+
     return TraceResult(
         coords=coords_arr,
         radii=radii_arr,
@@ -131,4 +147,8 @@ def load_swc(path: str | Path) -> tuple[TraceResult, tuple[float, float, float]]
         total_length_um=total_length,
         spacing=spacing,
         method="swc_import",
+        types=types_arr,
+        soma_center_um=soma_center,
+        soma_radii_um=soma_radii,
+        soma_axes=np.eye(3) if soma_center is not None else None,
     ), spacing

@@ -17,6 +17,7 @@ def _synthetic_volume():
 
 
 def _train_tiny(tmp_path) -> str:
+    torch.manual_seed(0)  # entrenamiento reproducible (sin esto el test es flaky)
     vol = _synthetic_volume()
     data = vol.data / 255.0
     labels = (data > 0.5).astype(np.float32)[:, None]

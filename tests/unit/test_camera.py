@@ -42,3 +42,23 @@ def test_zoom_and_pan_bounds():
     before = cam.target.copy()
     cam.pan(10.0, 0.0, 600.0)
     assert not np.allclose(cam.target, before)
+
+
+def test_project_points_matches_project():
+    cam = OrbitCamera(target=(1.0, 2.0, 3.0), distance=50.0)
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [4.0, -1.0, 2.0]], dtype=np.float64
+    )
+    batch = cam.project_points(points)
+    assert batch.shape == (3, 3)
+    for i in range(len(points)):
+        single = cam.project(points[i].astype(np.float32))
+        assert np.allclose(batch[i], single, atol=1e-4)
+    # El objetivo se proyecta al centro.
+    assert abs(batch[1, 0]) < 1e-4 and abs(batch[1, 1]) < 1e-4
+
+
+def test_project_points_rejects_bad_shape():
+    cam = OrbitCamera()
+    with pytest.raises(ValueError):
+        cam.project_points(np.zeros((4, 2)))

@@ -34,7 +34,7 @@ def test_main_window_constructs(app):
 
 def test_wizard_constructs(app):
     wizard = ReconstructionWizard()
-    assert wizard.stack.count() == 4
+    assert wizard.stack.count() == 5
     assert wizard.btn_next is not None
     wizard.deleteLater()
     app.processEvents()

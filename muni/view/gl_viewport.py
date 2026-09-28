@@ -24,8 +24,11 @@ from PySide6.QtOpenGL import (
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from muni.core.meshdata import MeshData
+from muni.trace.base import TraceResult
 from muni.view import glconstants as GL
 from muni.view.camera import OrbitCamera
+from muni.view.picking import nearest_node
+from muni.view.skeleton_mesh import build_skeleton_geometry
 
 _GL_DEBUG = os.environ.get("MUNI_GL_DEBUG") == "1"
 
@@ -92,6 +95,7 @@ class GLViewport(QOpenGLWidget):
 
     mesh_changed = Signal()
     measure_changed = Signal(float, str)  # (distancia, unidades)
+    skeleton_node_clicked = Signal(int)  # índice de nodo (Ctrl+clic), -1 = nada
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -114,15 +118,18 @@ class GLViewport(QOpenGLWidget):
         # Estado del ratón
         self._last_pos = None
         self._mouse_button: Qt.MouseButton | None = None
+        self._pick_pending = False
 
-        # Esqueleto
+        # Esqueleto tipado (tubos + soma), agrupado por color/tipo.
         self._show_skeleton = False
-        self._skeleton_verts: np.ndarray | None = None  # (E*2, 3) world coords
-        self._skeleton_colors: list[tuple[float, float, float]] = []
+        self._skeleton_result: TraceResult | None = None
+        self._skeleton_geometry: tuple[np.ndarray, np.ndarray] | None = None
+        self._skeleton_groups: list[tuple[int, int, tuple[float, float, float]]] = []
 
         # Bandera de re-upload de buffers
         self._mesh_dirty = True
         self._line_dirty = True
+        self._skeleton_dirty = True
 
         # Recursos GL (se crean en initializeGL)
         self._mesh_program: QOpenGLShaderProgram | None = None
@@ -135,6 +142,9 @@ class GLViewport(QOpenGLWidget):
         self._line_vao: QOpenGLVertexArrayObject | None = None
         self._line_vbo: QOpenGLBuffer | None = None
         self._line_segments: list[tuple[int, int, tuple[float, float, float]]] = []
+        self._skeleton_vao: QOpenGLVertexArrayObject | None = None
+        self._skeleton_vbo_pos: QOpenGLBuffer | None = None
+        self._skeleton_vbo_nrm: QOpenGLBuffer | None = None
         self._gl = None
 
     # -------------------------------------------------------------- propiedades
@@ -191,67 +201,42 @@ class GLViewport(QOpenGLWidget):
         self.update()
 
     def set_skeleton(
-        self, coords: np.ndarray, parents: np.ndarray, spacing: tuple[float, float, float]
+        self,
+        result: TraceResult | None,
+        *,
+        highlight_branches: set[int] | None = None,
+        highlight_soma: bool = False,
     ) -> None:
-        """Carga esqueleto para renderizado.
+        """Carga un esqueleto tipado (tubos por tipo + elipsoide del soma).
 
         Parameters
         ----------
-        coords:
-            ``(N, 3)`` coordenadas de voxel (z, y, x).
-        parents:
-            ``(N,)`` índice del padre (-1 para raíz).
-        spacing:
-            ``(dz, dy, dx)`` en micras.
+        result:
+            Resultado del tracing, o ``None`` para limpiar.
+        highlight_branches:
+            Ramas que se pintan en color de selección.
+        highlight_soma:
+            Si es ``True`` el soma se pinta en color de selección.
         """
-        if coords is None or len(coords) == 0:
-            self._skeleton_verts = None
-            self._skeleton_colors = []
-            self.update()
+        self._skeleton_result = result
+        if result is None or result.n_nodes == 0:
+            self.clear_skeleton()
             return
-
-        # Pequeño offset para que el esqueleto quede ligeramente por encima de la
-        # superficie de la neurona (evita z-fighting visual).
-        offset = 0.3
-
-        edges = []
-        for i in range(len(parents)):
-            p = int(parents[i])
-            if p >= 0:
-                # Convención del mesh: [X*sx, Y*sy, Z*sz].
-                v0 = np.array(
-                    [
-                        coords[i, 2] * spacing[2],
-                        coords[i, 1] * spacing[1],
-                        coords[i, 0] * spacing[0] + offset,
-                    ],
-                    dtype=np.float32,
-                )
-                v1 = np.array(
-                    [
-                        coords[p, 2] * spacing[2],
-                        coords[p, 1] * spacing[1],
-                        coords[p, 0] * spacing[0] + offset,
-                    ],
-                    dtype=np.float32,
-                )
-                edges.append((v0, v1))
-
-        if edges:
-            self._skeleton_verts = np.concatenate(
-                [np.array([a, b], np.float32) for a, b in edges], axis=0
-            )
-            self._skeleton_colors = [(1.0, 0.3, 0.3)] * len(edges)
-        else:
-            self._skeleton_verts = None
-            self._skeleton_colors = []
-        self._line_dirty = True
+        positions, normals, groups = build_skeleton_geometry(
+            result,
+            highlight_branches=highlight_branches,
+            highlight_soma=highlight_soma,
+        )
+        self._skeleton_geometry = (positions, normals) if len(positions) else None
+        self._skeleton_groups = groups
+        self._skeleton_dirty = True
         self.update()
 
     def clear_skeleton(self) -> None:
-        self._skeleton_verts = None
-        self._skeleton_colors = []
-        self._line_dirty = True
+        self._skeleton_result = None
+        self._skeleton_geometry = None
+        self._skeleton_groups = []
+        self._skeleton_dirty = True
         self.update()
 
     # ------------------------------------------------------------------ API
@@ -332,6 +317,12 @@ class GLViewport(QOpenGLWidget):
         self._line_vao.create()
         self._line_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self._line_segments = []
+
+        # VAO/VBO del esqueleto (tubos tipados + soma)
+        self._skeleton_vao = QOpenGLVertexArrayObject(self)
+        self._skeleton_vao.create()
+        self._skeleton_vbo_pos = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._skeleton_vbo_nrm = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
 
         self.upload_mesh()
         self.update()
@@ -417,13 +408,7 @@ class GLViewport(QOpenGLWidget):
                     b[axis] += size
                     segments.append((np.array([a, b], np.float32), col))
 
-        # Esqueleto: aristas del árbol dendrítico.
-        if (
-            self._show_skeleton
-            and self._skeleton_verts is not None
-            and len(self._skeleton_verts) > 0
-        ):
-            segments.append((self._skeleton_verts, (1.0, 0.3, 0.3)))
+        # Esqueleto: se dibuja como malla de tubos (ver upload_skeleton).
 
         # Concatenar en un solo VBO, recordando (offset, count, color).
         if segments:
@@ -446,6 +431,35 @@ class GLViewport(QOpenGLWidget):
                 offset += count
         else:
             self._line_segments = []
+
+    def upload_skeleton(self) -> None:
+        """Sube a GPU la geometría del esqueleto (posiciones + normales)."""
+        gl = self._gl
+        if gl is None or self._skeleton_vao is None:
+            return
+        if self._skeleton_geometry is None:
+            self._skeleton_dirty = False
+            return
+        positions, normals = self._skeleton_geometry
+
+        self._skeleton_vao.bind()
+
+        self._skeleton_vbo_pos.create()
+        self._skeleton_vbo_pos.bind()
+        self._skeleton_vbo_pos.allocate(positions.tobytes(), positions.nbytes)
+        self._mesh_program.enableAttributeArray(0)
+        self._mesh_program.setAttributeBuffer(0, GL.GL_FLOAT, 0, 3, 0)
+        self._skeleton_vbo_pos.release()
+
+        self._skeleton_vbo_nrm.create()
+        self._skeleton_vbo_nrm.bind()
+        self._skeleton_vbo_nrm.allocate(normals.tobytes(), normals.nbytes)
+        self._mesh_program.enableAttributeArray(1)
+        self._mesh_program.setAttributeBuffer(1, GL.GL_FLOAT, 0, 3, 0)
+        self._skeleton_vbo_nrm.release()
+
+        self._skeleton_vao.release()
+        self._skeleton_dirty = False
 
     def _line_extent(self) -> float:
         if self._mesh is not None and not self._mesh.is_empty:
@@ -472,6 +486,8 @@ class GLViewport(QOpenGLWidget):
         if self._line_dirty:
             self._rebuild_lines()
             self._line_dirty = False
+        if self._skeleton_dirty and self._show_skeleton:
+            self.upload_skeleton()
 
         self.camera.set_aspect(self.width(), self.height())
         mvp = _qmatrix4x4(self.camera.view_projection_matrix())
@@ -496,6 +512,20 @@ class GLViewport(QOpenGLWidget):
             self._mesh_program.release()
             gl.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
 
+        # Esqueleto tipado: se dibuja sobre la superficie (se limpia el z-buffer)
+        # manteniendo la auto-oclusión entre tubos.
+        if self._show_skeleton and self._skeleton_geometry is not None and self._skeleton_groups:
+            gl.glClear(GL.GL_DEPTH_BUFFER_BIT)
+            self._mesh_program.bind()
+            self._mesh_program.setUniformValue("uMVP", mvp)
+            self._mesh_program.setUniformValue("uLightDir", QVector3D(-0.4, -0.8, -0.4))
+            self._skeleton_vao.bind()
+            for offset, count, color in self._skeleton_groups:
+                self._mesh_program.setUniformValue("uColor", QVector3D(*color))
+                gl.glDrawArrays(GL.GL_TRIANGLES, offset, count)
+            self._skeleton_vao.release()
+            self._mesh_program.release()
+
         # Líneas
         if self._line_vbo is not None and self._line_segments:
             gl.glDisable(GL.GL_DEPTH_TEST)
@@ -515,6 +545,12 @@ class GLViewport(QOpenGLWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self._last_pos = event.position()
         self._mouse_button = event.button()
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        self._pick_pending = (
+            ctrl
+            and event.button() == Qt.MouseButton.LeftButton
+            and not self.measure_mode
+        )
         if self.measure_mode and event.button() == Qt.MouseButton.LeftButton:
             marker = self._pick_marker(event.position().x(), event.position().y())
             if marker is not None:
@@ -532,7 +568,7 @@ class GLViewport(QOpenGLWidget):
             self._drag_marker_to(event.position().x(), event.position().y(), self._drag_marker)
             self._line_dirty = True
             self.emit_measure()
-        elif self._mouse_button == Qt.MouseButton.LeftButton:
+        elif self._mouse_button == Qt.MouseButton.LeftButton and not self._pick_pending:
             # Rotación orbital
             self.camera.rotate(dx * 0.4, dy * -0.4)
         elif self._mouse_button in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
@@ -542,6 +578,17 @@ class GLViewport(QOpenGLWidget):
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._pick_pending:
+            node = nearest_node(
+                self._skeleton_result,
+                self.camera,
+                event.position().x(),
+                event.position().y(),
+                self.width(),
+                self.height(),
+            )
+            self.skeleton_node_clicked.emit(-1 if node is None else int(node))
+            self._pick_pending = False
         self._drag_marker = None
         self._mouse_button = None
         self._last_pos = None

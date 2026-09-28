@@ -5,19 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QDockWidget,
     QFileDialog,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -199,11 +197,7 @@ class MainWindow(QMainWindow):
             self.trace_spacing = wizard.trace_spacing
             self.viewport.set_mesh(wizard.mesh, units="um")
             if self.trace_result is not None and self.trace_spacing is not None:
-                self.viewport.set_skeleton(
-                    self.trace_result.coords,
-                    self.trace_result.parents,
-                    self.trace_spacing,
-                )
+                self.viewport.set_skeleton(self.trace_result)
                 self._act_skeleton.setChecked(True)
             else:
                 self.viewport.clear_skeleton()
@@ -229,7 +223,7 @@ class MainWindow(QMainWindow):
                 trace_result, trace_spacing = load_swc(swc_path)
                 self.trace_result = trace_result
                 self.trace_spacing = trace_spacing
-                self.viewport.set_skeleton(trace_result.coords, trace_result.parents, trace_spacing)
+                self.viewport.set_skeleton(trace_result)
                 self._act_skeleton.setChecked(True)
             except (ValueError, OSError):
                 self.trace_result = None
