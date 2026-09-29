@@ -146,6 +146,18 @@ class OrbitCamera:
             return np.array([0.0, 0.0, 0.0], dtype=np.float32)
         return clip[:3] / clip[3]
 
+    def project_points(self, points: np.ndarray) -> np.ndarray:
+        """Proyecta ``(N, 3)`` puntos 3D a NDC ``(N, 3)`` (vectorizado)."""
+        pts = np.asarray(points, dtype=np.float64)
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            raise ValueError(f"points debe ser (N,3), se recibió {pts.shape}.")
+        vp = (self.projection_matrix() @ self.view_matrix()).astype(np.float64)
+        p4 = np.column_stack([pts, np.ones(len(pts))])
+        clip = p4 @ vp.T
+        w = clip[:, 3:4]
+        safe = np.where(np.abs(w) < 1e-9, 1.0, w)
+        return clip[:, :3] / safe
+
     def view_projection_matrix(self) -> np.ndarray:
         """Matriz combinada proyección·vista."""
         return self.projection_matrix() @ self.view_matrix()

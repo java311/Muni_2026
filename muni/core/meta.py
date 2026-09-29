@@ -26,7 +26,7 @@ class ModelMeta:
     spacing_z_um: float = 1.0
 
     # Calibración
-    isolevel: float = 0.5
+    isolevel: float = 0.9
     objective: int = 0  # magnificación del objetivo del microscopio
     dendrite_diameter_um: float = 0.0  # diámetro de dendrita indicado por el usuario
 

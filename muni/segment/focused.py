@@ -79,7 +79,9 @@ class FocusedSegmenter(Segmenter):
         for z in range(data.shape[0]):
             sharpness[z] = _local_std(data[z], radius=self.sharpness_radius)
 
-        s_thresh = float(np.percentile(sharpness[base_mask], 85)) if base_mask.any() else 0.0
+        # Percentil 50: el 85 solo conserva el borde nítido (un anillo de 1 px)
+        # que la apertura morfológica posterior borra por completo.
+        s_thresh = float(np.percentile(sharpness[base_mask], 50)) if base_mask.any() else 0.0
         sharp_mask = sharpness > s_thresh
 
         mask = base_mask & sharp_mask

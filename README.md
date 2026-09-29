@@ -100,3 +100,14 @@ Li, R., Kudryashev, M. & Yakimovich, A. "A weak-labelling and deep learning appr
 ## Licencia
 
 GPL-3.0-or-later. El proyecto original Muni se distribuye bajo GNU/GPL.
+
+## TODO TASKS (for user's reference not for the model reference)
+-- Unet check if it is used or not. If not delete it. 
+-- Update documentation (uml diagrams of connection between classes may be good)
+-- Only make the 3d model where there is skeleton. 
+-- change skeleton from spheres to pipes
+-- update documentation (for the internet)
+-- spines automatic count
+-- Fiji export file
+-- Understand every property and value in the wizard
+-- 

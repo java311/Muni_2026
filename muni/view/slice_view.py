@@ -11,21 +11,26 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
+from muni.view.skeleton_mesh import DEFAULT_COLOR, TYPE_COLORS
+
 
 class SliceView(QWidget):
-    """Widget 2D que muestra un plano en gris con zoom, pan y línea de calibración."""
+    """Visor 2D de un plano: zoom/pan, línea de calibración y marcadores."""
 
     line_drawn = Signal(tuple)  # (x1, y1, x2, y2) en coordenadas de imagen
+    point_clicked = Signal(int, int)  # (x, y) en coordenadas de imagen
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._plane: np.ndarray | None = None  # (Y, X) float32 en 0..255
         self._overlay: np.ndarray | None = None  # máscara bool del umbral
         self._overlay_color: tuple[int, int, int] = (255, 40, 40)  # (R, G, B)
+        self._markers: np.ndarray | None = None  # (M, 3) -> (x, y, tipo SWC)
         self._zoom = 1.0
         self._offset = np.array([0.0, 0.0], dtype=np.float64)  # px pantalla
         self._line: tuple[int, int, int, int] | None = None
         self.draw_mode = False
+        self.mark_mode = False
         self._drawing = False
         self._line_start: QPointF | None = None
         self._last: QPointF | None = None
@@ -51,14 +56,24 @@ class SliceView(QWidget):
         self._line = line
         self.update()
 
+    def set_markers(self, markers) -> None:
+        """Muestra marcadores ``(x, y, tipo_swc)`` superpuestos al plano."""
+        if markers is None:
+            self._markers = None
+        else:
+            array = np.asarray(markers, dtype=np.float64)
+            self._markers = array if array.size else None
+        self.update()
+
     def clear(self) -> None:
         self._plane = None
         self._overlay = None
+        self._markers = None
         self._line = None
         self.update()
 
     # ------------------------------------------------------------ pintado
-    def paintEvent(self, event) -> None:  # noqa: N802 (API Qt)
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(20, 22, 26))
         if self._plane is None:
@@ -82,6 +97,23 @@ class SliceView(QWidget):
             painter.setBrush(QColor(255, 60, 60))
             painter.drawEllipse(p1, 4, 4)
             painter.drawEllipse(p2, 4, 4)
+
+        if self._markers is not None:
+            radius = max(2.0, self._zoom * 1.5)
+            painter.setPen(Qt.PenStyle.NoPen)
+            for x, y, swc_type in self._markers:
+                color = TYPE_COLORS.get(int(swc_type), DEFAULT_COLOR)
+                painter.setBrush(
+                    QColor(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+                )
+                painter.drawEllipse(
+                    QPointF(
+                        self._offset[0] + x * self._zoom,
+                        self._offset[1] + y * self._zoom,
+                    ),
+                    radius,
+                    radius,
+                )
 
     def _to_qimage(self) -> QImage:
         plane = np.clip(np.rint(self._plane), 0, 255).astype(np.uint8)
@@ -116,19 +148,23 @@ class SliceView(QWidget):
         self._offset[1] = cursor.y() - img[1] * self._zoom
         self.update()
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (API Qt)
+    def mousePressEvent(self, event) -> None:
         self._last = event.position()
+        if self.mark_mode and event.button() == Qt.MouseButton.LeftButton:
+            ix, iy = self._image_pos(event.position())
+            self.point_clicked.emit(round(ix), round(iy))
+            return
         if self.draw_mode and event.button() == Qt.MouseButton.LeftButton:
             self._drawing = True
             self._line_start = event.position()
         self.update()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (API Qt)
+    def mouseMoveEvent(self, event) -> None:
         if self._drawing and self._line_start is not None:
             # Preview de la línea en curso.
             ix1, iy1 = self._image_pos(self._line_start)
             ix2, iy2 = self._image_pos(event.position())
-            self._line = (int(round(ix1)), int(round(iy1)), int(round(ix2)), int(round(iy2)))
+            self._line = (round(ix1), round(iy1), round(ix2), round(iy2))
             self.update()
         elif self._last is not None and event.buttons() & Qt.MouseButton.RightButton:
             delta = event.position() - self._last
@@ -138,13 +174,13 @@ class SliceView(QWidget):
         else:
             self._last = event.position()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (API Qt)
+    def mouseReleaseEvent(self, event) -> None:
         if self._drawing and self._line_start is not None and event.button() == Qt.MouseButton.LeftButton:
             self._drawing = False
             ix1, iy1 = self._image_pos(self._line_start)
             ix2, iy2 = self._image_pos(event.position())
             if (ix1, iy1) != (ix2, iy2):
-                line = (int(round(ix1)), int(round(iy1)), int(round(ix2)), int(round(iy2)))
+                line = (round(ix1), round(iy1), round(ix2), round(iy2))
                 self._line = line
                 self.line_drawn.emit(line)
         self._line_start = None
