@@ -4,6 +4,7 @@ import numpy as np
 
 from muni.trace.base import SWC_DENDRITE, TraceResult
 from muni.view.skeleton_mesh import (
+    CONTEXT_COLOR,
     HIGHLIGHT_COLOR,
     TYPE_COLORS,
     build_skeleton_geometry,
@@ -42,3 +43,21 @@ def test_highlight_multiple_branches_merges_into_one_group():
 def test_no_highlight_has_no_highlight_color():
     _p, _n, groups = build_skeleton_geometry(_two_branches())
     assert HIGHLIGHT_COLOR not in [color for _o, _c, color in groups]
+
+
+def test_context_branch_uses_context_color():
+    _p, _n, groups = build_skeleton_geometry(
+        _two_branches(), highlight_branches={1}, context_branches={0}
+    )
+    colors = [color for _o, _c, color in groups]
+    assert HIGHLIGHT_COLOR in colors
+    assert CONTEXT_COLOR in colors
+
+
+def test_highlight_wins_over_context_for_same_branch():
+    _p, _n, groups = build_skeleton_geometry(
+        _two_branches(), highlight_branches={0}, context_branches={0}
+    )
+    colors = [color for _o, _c, color in groups]
+    assert HIGHLIGHT_COLOR in colors
+    assert CONTEXT_COLOR not in colors

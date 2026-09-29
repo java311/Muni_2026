@@ -21,7 +21,8 @@ TYPE_COLORS: dict[int, tuple[float, float, float]] = {
     SWC_SPINE: (0.95, 0.75, 0.20),  # naranja
 }
 DEFAULT_COLOR = (0.80, 0.80, 0.80)
-HIGHLIGHT_COLOR = (1.0, 0.85, 0.15)  # selección (amarillo)
+HIGHLIGHT_COLOR = (1.0, 0.5, 0.0)  # rama seleccionada / a borrar (naranja)
+CONTEXT_COLOR = (1.0, 0.85, 0.15)  # padres (contexto, no se borran) (amarillo)
 
 
 def build_skeleton_geometry(
@@ -31,15 +32,18 @@ def build_skeleton_geometry(
     soma_slices: int = 20,
     soma_stacks: int = 12,
     highlight_branches: set[int] | None = None,
+    context_branches: set[int] | None = None,
     highlight_soma: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int, tuple[float, float, float]]]]:
     """Construye ``(posiciones, normales, grupos)`` del esqueleto de ``result``.
 
     ``grupos`` es una lista de ``(offset, count, color)`` en número de vértices.
-    Las ramas en ``highlight_branches`` y/o el soma (``highlight_soma``) se
-    pintan con ``HIGHLIGHT_COLOR`` para indicar la selección.
+    Las ramas en ``highlight_branches`` (selección) se pintan con
+    ``HIGHLIGHT_COLOR``; las de ``context_branches`` (padres, contexto) con
+    ``CONTEXT_COLOR``; el soma con ``highlight_soma`` usa el color de selección.
     """
     highlight = {int(b) for b in highlight_branches} if highlight_branches else set()
+    context = {int(b) for b in context_branches} if context_branches else set()
     world = result.world_coords()
     groups: dict[tuple[float, float, float], list[tuple[np.ndarray, np.ndarray]]] = (
         defaultdict(list)
@@ -58,6 +62,8 @@ def build_skeleton_geometry(
         if tube is not None:
             if int(branch) in highlight:
                 color = HIGHLIGHT_COLOR
+            elif int(branch) in context:
+                color = CONTEXT_COLOR
             else:
                 color = TYPE_COLORS.get(_branch_type(result.types[order]), DEFAULT_COLOR)
             groups[color].append(tube)

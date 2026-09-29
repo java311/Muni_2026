@@ -205,6 +205,7 @@ class GLViewport(QOpenGLWidget):
         result: TraceResult | None,
         *,
         highlight_branches: set[int] | None = None,
+        context_branches: set[int] | None = None,
         highlight_soma: bool = False,
     ) -> None:
         """Carga un esqueleto tipado (tubos por tipo + elipsoide del soma).
@@ -214,7 +215,9 @@ class GLViewport(QOpenGLWidget):
         result:
             Resultado del tracing, o ``None`` para limpiar.
         highlight_branches:
-            Ramas que se pintan en color de selección.
+            Ramas que se pintan en color de selección (lo que se borrará).
+        context_branches:
+            Ramas de contexto (padres); no se borran.
         highlight_soma:
             Si es ``True`` el soma se pinta en color de selección.
         """
@@ -225,6 +228,7 @@ class GLViewport(QOpenGLWidget):
         positions, normals, groups = build_skeleton_geometry(
             result,
             highlight_branches=highlight_branches,
+            context_branches=context_branches,
             highlight_soma=highlight_soma,
         )
         self._skeleton_geometry = (positions, normals) if len(positions) else None

@@ -285,3 +285,21 @@ def branch_ancestors(labels: np.ndarray, parents: np.ndarray, bid: int) -> list[
         seen.add(cur)
         cur = parent.get(cur)
     return chain
+
+
+def branch_descendants(labels: np.ndarray, parents: np.ndarray, bid: int) -> set[int]:
+    """Rama ``bid`` y todas sus ramas hijas (el subárbol completo)."""
+    parent = branch_parent_map(labels, parents)
+    children: dict[int, list[int]] = {}
+    for branch, parent_bid in parent.items():
+        if parent_bid is not None:
+            children.setdefault(parent_bid, []).append(branch)
+    result: set[int] = set()
+    stack = [int(bid)]
+    while stack:
+        branch = stack.pop()
+        if branch in result:
+            continue
+        result.add(branch)
+        stack.extend(children.get(branch, []))
+    return result

@@ -16,10 +16,10 @@ import pytest
 pyside = pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from muni.core.volume import Volume3D
-from muni.trace.graph import branch_ancestors
+from muni.trace.graph import branch_ancestors, branch_descendants
 from muni.view.wizard import ReconstructionWizard
 
 
@@ -187,43 +187,54 @@ def test_wizard_tree_selection_and_soma(app):
     app.processEvents()
 
 
-def test_wizard_include_parents_delete_and_undo(app):
+def test_wizard_delete_removes_exactly_highlighted_subtree_and_undo(app, monkeypatch):
+    # Si la rama elegida es la raíz habrá confirmación; la aceptamos.
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
     wiz = _reach_skeleton(app, stack=_branched_stack(), line=(8, 20, 38, 20))
 
     branch_ids = [bid for bid in wiz._tree_items if bid != -1]
     assert len(branch_ids) >= 2, "se esperaba un esqueleto ramificado"
 
-    # Buscar una rama con padres (no la raíz).
+    # Rama con hijos: su subárbol tiene más de una rama.
     deep = None
     for bid in branch_ids:
-        chain = branch_ancestors(
-            wiz.trace_result.branch_labels, wiz.trace_result.parents, bid
-        )
-        if len(chain) > 1:
+        desc = branch_descendants(wiz.trace_result.branch_labels, wiz.trace_result.parents, bid)
+        if len(desc) > 1:
             deep = bid
             break
-    if deep is None:  # pragma: no cover - no debería ocurrir con el stack ramificado
+    if deep is None:  # pragma: no cover
         wiz.deleteLater()
         import pytest
 
-        pytest.skip("el esqueleto sintético no generó ramas hijas")
+        pytest.skip("el esqueleto sintético no generó ramas con hijos")
 
-    # Checkbox: la selección incluye la rama y todos sus padres.
+    trace = wiz.trace_result
+    delete_set = branch_descendants(trace.branch_labels, trace.parents, deep)
     wiz.tree_branches.setCurrentItem(wiz._tree_items[deep])
-    wiz.chk_include_parents.setChecked(True)
-    expected = set(
-        branch_ancestors(wiz.trace_result.branch_labels, wiz.trace_result.parents, deep)
-    )
-    assert wiz._highlight_branch_set() == expected
-    assert len(expected) > 1
-    # Las filas de los padres quedan seleccionadas.
-    selected = {it.data(0, Qt.ItemDataRole.UserRole) for it in wiz.tree_branches.selectedItems()}
-    assert expected.issubset(selected)
+    assert wiz._delete_branch_set() == delete_set
+    assert len(delete_set) > 1
 
-    # Supr borra solo la rama primaria; Ctrl+Z la restaura (1 paso).
-    before_nodes = wiz.trace_result.n_nodes
+    # Con el check, los padres son contexto (atenuados, no se borran).
+    wiz.chk_include_parents.setChecked(True)
+    ancestors = set(branch_ancestors(trace.branch_labels, trace.parents, deep))
+    assert wiz._context_branch_set() == ancestors - delete_set
+    selected = {it.data(0, Qt.ItemDataRole.UserRole) for it in wiz.tree_branches.selectedItems()}
+    assert delete_set.issubset(selected)
+
+    # El borrado elimina EXACTAMENTE el subárbol resaltado (ni más ni menos).
+    before = wiz.trace_result
+    before_coords = [tuple(c) for c in before.coords]
+    label_of = {tuple(c): int(before.branch_labels[i]) for i, c in enumerate(before.coords)}
+    before_nodes = before.n_nodes
     wiz._on_delete_branch()
     assert wiz.trace_result.n_nodes < before_nodes
+    after_coords = {tuple(c) for c in wiz.trace_result.coords}
+    removed_branches = {label_of[c] for c in before_coords if c not in after_coords}
+    assert removed_branches == delete_set
+
+    # Ctrl+Z restaura el estado previo (1 paso).
     assert wiz._undo_snapshot is not None
     wiz._on_undo()
     assert wiz.trace_result.n_nodes == before_nodes
@@ -231,7 +242,6 @@ def test_wizard_include_parents_delete_and_undo(app):
     wiz._on_undo()  # segundo deshacer: no hace nada
     assert wiz.trace_result.n_nodes == before_nodes
 
-    # Los atajos están conectados.
     assert wiz._shortcut_delete is not None
     assert wiz._shortcut_undo is not None
 

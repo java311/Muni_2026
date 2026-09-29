@@ -12,7 +12,7 @@ from muni.trace.edit import (
     set_branch_type,
     set_soma_from_seed,
 )
-from muni.trace.graph import branch_ancestors, branch_tree
+from muni.trace.graph import branch_ancestors, branch_descendants, branch_tree
 from muni.trace.skimage_tracer import SkimageTracer
 
 
@@ -129,6 +129,19 @@ def test_branch_ancestors_go_up_to_root():
         assert chain[0] == bid
         assert len(chain) == depth + 1
         assert chain[-1] in roots
+
+
+def test_branch_descendants_includes_whole_subtree():
+    trace = _trace()
+    tree = branch_tree(trace.branch_labels, trace.parents)
+    all_bids = {bid for bid, _parent, _depth in tree}
+    roots = [bid for bid, parent, _depth in tree if parent is None]
+    leaves = [bid for bid, _parent, _depth in tree if not any(p == bid for _b, p, _d in tree)]
+
+    for root in roots:  # la máscara es conexa: el subárbol de la raíz es todo
+        assert branch_descendants(trace.branch_labels, trace.parents, root) == all_bids
+    for leaf in leaves:  # una hoja no tiene descendientes
+        assert branch_descendants(trace.branch_labels, trace.parents, leaf) == {leaf}
 
 
 def test_branch_tree_is_hierarchical_and_acyclic():

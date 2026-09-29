@@ -18,7 +18,7 @@ import sys
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -70,7 +70,13 @@ from muni.trace.edit import (
     set_branch_type,
     set_soma_from_seed,
 )
-from muni.trace.graph import branch_ancestors, branch_start, branch_tree, edge_length
+from muni.trace.graph import (
+    branch_ancestors,
+    branch_descendants,
+    branch_start,
+    branch_tree,
+    edge_length,
+)
 from muni.trace.skimage_tracer import SkimageTracer
 from muni.trace.soma import detect_soma
 from muni.view.gl_viewport import GLViewport
@@ -373,7 +379,7 @@ class ReconstructionWizard(QDialog):
         self.tree_branches.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.tree_branches.currentItemChanged.connect(self._on_branch_current_changed)
 
-        self.chk_include_parents = QCheckBox("Seleccionar rama y sus padres (hacia el soma)")
+        self.chk_include_parents = QCheckBox("Mostrar padres como contexto (no se borran)")
         self.chk_include_parents.toggled.connect(self._on_include_parents_toggled)
 
         self.lbl_select_hint = QLabel(
@@ -885,16 +891,29 @@ class ReconstructionWizard(QDialog):
         self._refresh_skeleton()
         self._update_nav(self.stack.currentIndex())
 
-    def _highlight_branch_set(self) -> set[int]:
-        """Ramas a resaltar: la seleccionada, o ella y sus padres si el check lo pide."""
+    def _delete_branch_set(self) -> set[int]:
+        """Ramas que se borrarán: la seleccionada y todo su subárbol."""
         result = self.trace_result
         if result is None or self._selected_soma or self._selected_branch is None:
             return set()
-        if not self.chk_include_parents.isChecked():
-            return {int(self._selected_branch)}
-        return set(
-            branch_ancestors(result.branch_labels, result.parents, int(self._selected_branch))
+        return branch_descendants(
+            result.branch_labels, result.parents, int(self._selected_branch)
         )
+
+    def _context_branch_set(self) -> set[int]:
+        """Padres hacia el soma (contexto, **no** se borran), si el check está activo."""
+        result = self.trace_result
+        if (
+            result is None
+            or self._selected_soma
+            or self._selected_branch is None
+            or not self.chk_include_parents.isChecked()
+        ):
+            return set()
+        ancestors = branch_ancestors(
+            result.branch_labels, result.parents, int(self._selected_branch)
+        )
+        return set(ancestors) - self._delete_branch_set()
 
     def _apply_highlight(self) -> None:
         """Repinta el esqueleto respetando la selección actual."""
@@ -903,7 +922,8 @@ class ReconstructionWizard(QDialog):
             return
         self.gl_skeleton.set_skeleton(
             result,
-            highlight_branches=self._highlight_branch_set(),
+            highlight_branches=self._delete_branch_set(),
+            context_branches=self._context_branch_set(),
             highlight_soma=self._selected_soma,
         )
         self.gl_skeleton.show_skeleton = True
@@ -978,9 +998,10 @@ class ReconstructionWizard(QDialog):
         self._select_in_tree()
 
     def _select_in_tree(self) -> None:
-        """Sincroniza la selección del árbol con la rama/soma seleccionados.
+        """Sincroniza el árbol con la selección.
 
-        Con ``chk_include_parents`` marcado también marca las filas de los padres.
+        Marca las filas del subárbol que se borraría y atenúa las de los padres
+        (contexto) cuando el check está activo.
         """
         target = -1 if self._selected_soma else self._selected_branch
         if target is None:
@@ -988,16 +1009,22 @@ class ReconstructionWizard(QDialog):
         item = getattr(self, "_tree_items", {}).get(target)
         if item is None:
             return
+        delete_set = self._delete_branch_set()
+        context_set = self._context_branch_set()
         tree = self.tree_branches
         tree.blockSignals(True)
         try:
             tree.clearSelection()
             tree.setCurrentItem(item)
+            for bid, tree_item in self._tree_items.items():
+                if bid in delete_set:
+                    tree_item.setSelected(True)
+                    tree_item.setForeground(0, QBrush())
+                elif bid in context_set:
+                    tree_item.setForeground(0, QBrush(QColor(150, 150, 150)))
+                else:
+                    tree_item.setForeground(0, QBrush())
             item.setSelected(True)
-            for bid in self._highlight_branch_set():
-                ancestor_item = self._tree_items.get(bid)
-                if ancestor_item is not None:
-                    ancestor_item.setSelected(True)
         finally:
             tree.blockSignals(False)
 
@@ -1031,6 +1058,8 @@ class ReconstructionWizard(QDialog):
             self._selected_soma = False
             self._selected_branch = int(result.branch_labels[node])
         self._select_in_tree()
+        # El árbol recibe el foco para que 'Supr' borre la rama recién elegida.
+        self.tree_branches.setFocus()
         self._apply_highlight()
 
     def _refresh_skeleton_slice(self) -> None:
