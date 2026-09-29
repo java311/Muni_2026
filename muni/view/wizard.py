@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -93,7 +96,6 @@ class ReconstructionWizard(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Muni — Nueva reconstrucción")
         self.setWindowIcon(load_icon("Muni.ico"))
-        self.resize(1100, 720)
 
         # Resultados finales (contrato con la ventana principal).
         self.mesh = None
@@ -128,7 +130,7 @@ class ReconstructionWizard(QDialog):
         self.page4 = self._build_page_skeleton()
         self.page5 = self._build_page_model()
         for p in (self.page1, self.page2, self.page3, self.page4, self.page5):
-            self.stack.addWidget(p)
+            self.stack.addWidget(self._scroll_page(p))
 
         # ------------------------------------------------------ progreso global
         self.progress = QProgressBar()
@@ -151,12 +153,22 @@ class ReconstructionWizard(QDialog):
         btn_row.addWidget(self.btn_next)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.stack)
+        layout.addWidget(self.stack, 1)
         layout.addWidget(self.progress)
         layout.addWidget(self.lbl_progress)
         layout.addLayout(btn_row)
 
         self._update_nav(0)
+        self.resize(1100, 720)
+        self.setMinimumSize(760, 520)
+
+    def _scroll_page(self, page: QWidget) -> QScrollArea:
+        """Envuelve una página en un área con scroll (permite encoger la ventana)."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        return scroll
 
     # ============================================================ constructoras
     def _build_page_open(self) -> QWidget:
@@ -180,9 +192,10 @@ class ReconstructionWizard(QDialog):
         lay.addWidget(self.list_files)
         lay.addWidget(self.lbl_stack_info)
 
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(page)
-        outer.addWidget(box)
-        outer.addStretch(1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box, 1)
         return page
 
     def _build_page_calibration(self) -> QWidget:
@@ -230,7 +243,7 @@ class ReconstructionWizard(QDialog):
         right.addWidget(QLabel("Objetivo del microscopio:"))
         right.addWidget(self.spin_objective)
         right.addWidget(QLabel("Planos:"))
-        right.addWidget(self.list_planes)
+        right.addWidget(self.list_planes, 1)
         right.addWidget(self.chk_show_sharpness)
         right.addWidget(self.btn_auto_threshold)
         right.addWidget(self.lbl_threshold)
@@ -238,15 +251,15 @@ class ReconstructionWizard(QDialog):
         right.addWidget(QLabel("Diámetro de la dendrita:"))
         right.addWidget(self.spin_diameter)
         right.addWidget(self.lbl_calib_state)
-        right.addStretch(1)
 
         hb = QHBoxLayout(box)
         hb.addWidget(self.slice_view, 3)
         hb.addLayout(right, 1)
 
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(page)
-        outer.addWidget(box)
-        outer.addStretch(1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box, 1)
         return page
 
     def _build_page_segmentation(self) -> QWidget:
@@ -256,7 +269,6 @@ class ReconstructionWizard(QDialog):
         self.seg_preview = SliceView()
         self.seg_preview.set_overlay_color(40, 255, 40)
         self.list_seg_planes = QListWidget()
-        self.list_seg_planes.setMaximumHeight(140)
         self.list_seg_planes.currentRowChanged.connect(self._on_seg_plane_changed)
 
         self.radio_seg_classical = QRadioButton("Clásico (Otsu)")
@@ -320,17 +332,17 @@ class ReconstructionWizard(QDialog):
         right.addWidget(self.chk_keep_largest)
         right.addWidget(self.btn_seg_preview)
         right.addWidget(QLabel("Planos:"))
-        right.addWidget(self.list_seg_planes)
+        right.addWidget(self.list_seg_planes, 1)
         right.addWidget(self.lbl_seg_info)
-        right.addStretch(1)
 
         hb = QHBoxLayout(box)
         hb.addWidget(self.seg_preview, 3)
         hb.addLayout(right, 1)
 
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(page)
-        outer.addWidget(box)
-        outer.addStretch(1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box, 1)
         return page
 
     def _build_page_skeleton(self) -> QWidget:
@@ -347,7 +359,6 @@ class ReconstructionWizard(QDialog):
 
         self.lbl_skel_stats = QLabel("Sin esqueleto.")
         self.lbl_skel_stats.setStyleSheet("color: #999;")
-        self.lbl_skel_stats.setWordWrap(True)
 
         self.spin_spur = QDoubleSpinBox()
         self.spin_spur.setRange(0.0, 100.0)
@@ -359,7 +370,6 @@ class ReconstructionWizard(QDialog):
         self.tree_branches = QTreeWidget()
         self.tree_branches.setColumnCount(4)
         self.tree_branches.setHeaderLabels(["Rama", "Longitud", "Radio", "Tipo"])
-        self.tree_branches.setMaximumHeight(220)
         self.tree_branches.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.tree_branches.currentItemChanged.connect(self._on_branch_current_changed)
 
@@ -367,11 +377,13 @@ class ReconstructionWizard(QDialog):
         self.chk_include_parents.toggled.connect(self._on_include_parents_toggled)
 
         self.lbl_select_hint = QLabel(
+            "Ctrl+clic: seleccionar · Supr: borrar · Ctrl+Z: deshacer"
+        )
+        self.lbl_select_hint.setStyleSheet("color: #7c4;")
+        self.lbl_select_hint.setToolTip(
             "Ctrl + clic en el visor 3D para seleccionar dendritas o el soma. "
             "Supr elimina la rama seleccionada; Ctrl+Z deshace."
         )
-        self.lbl_select_hint.setStyleSheet("color: #7c4;")
-        self.lbl_select_hint.setWordWrap(True)
 
         # Supr borra la rama cuando el árbol tiene el foco; Ctrl+Z deshace.
         self._shortcut_delete = QShortcut(QKeySequence.StandardKey.Delete, self.tree_branches)
@@ -414,9 +426,9 @@ class ReconstructionWizard(QDialog):
 
         self.lbl_edit_hint = QLabel("")
         self.lbl_edit_hint.setStyleSheet("color: #999;")
-        self.lbl_edit_hint.setWordWrap(True)
 
         self.slice_skel = SliceView()
+        self.slice_skel.setMinimumHeight(120)
         self.slice_skel.mark_mode = False
         self.slice_skel.point_clicked.connect(self._on_skel_click)
         self.list_skel_planes = QListWidget()
@@ -431,7 +443,7 @@ class ReconstructionWizard(QDialog):
         row.addWidget(self.btn_prune)
         right.addLayout(row)
         right.addWidget(QLabel("Ramas:"))
-        right.addWidget(self.tree_branches)
+        right.addWidget(self.tree_branches, 1)
         right.addWidget(self.chk_include_parents)
         soma_box = QGroupBox("Soma (núcleo)")
         soma_row = QHBoxLayout(soma_box)
@@ -455,15 +467,15 @@ class ReconstructionWizard(QDialog):
         right.addWidget(QLabel("Planos (para añadir ramas):"))
         right.addWidget(self.list_skel_planes)
         right.addWidget(self.slice_skel)
-        right.addStretch(1)
 
         hb = QHBoxLayout(box)
         hb.addWidget(self.gl_skeleton, 3)
         hb.addLayout(right, 2)
 
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(page)
-        outer.addWidget(box)
-        outer.addStretch(1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box, 1)
         return page
 
     def _build_page_model(self) -> QWidget:
@@ -538,9 +550,10 @@ class ReconstructionWizard(QDialog):
         hb.addWidget(self.gl_model, 3)
         hb.addLayout(right, 2)
 
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(page)
-        outer.addWidget(box)
-        outer.addStretch(1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box, 1)
         return page
 
     # ============================================================== navegación
@@ -1188,12 +1201,10 @@ class ReconstructionWizard(QDialog):
     # ============================================================== soma (paso 4)
     def _on_set_soma_toggled(self, checked: bool) -> None:
         if checked:
-            self.lbl_select_hint.setText(
-                "Ctrl + clic sobre el núcleo en el visor 3D para fijar el soma."
-            )
+            self.lbl_select_hint.setText("Ctrl+clic sobre el núcleo para fijar el soma")
         else:
             self.lbl_select_hint.setText(
-                "Ctrl + clic en el visor 3D para seleccionar dendritas o el soma."
+                "Ctrl+clic: seleccionar · Supr: borrar · Ctrl+Z: deshacer"
             )
 
     def _seed_from_current_soma(self) -> tuple[int, int, int] | None:
